@@ -67,7 +67,8 @@ def link_streaming_assets(sa):
 
 def main():
     os.makedirs(DATA, exist_ok=True)
-    shutil.copy2(os.path.join(PLAYER, "WindowsPlayer.exe"), os.path.join(OUT, "MarbleKnights.exe"))
+    launcher = os.path.join(WORK, "win", "launcher.exe")  # WindowsPlayer.exe with -force-gles30 (loader/win/launcher.c)
+    shutil.copy2(launcher if os.path.exists(launcher) else os.path.join(PLAYER, "WindowsPlayer.exe"), os.path.join(OUT, "MarbleKnights.exe"))
     for f in ("UnityPlayer.dll", "UnityCrashHandler64.exe"):
         shutil.copy2(os.path.join(PLAYER, f), os.path.join(OUT, f))
     src = os.path.join(APP, "Data")

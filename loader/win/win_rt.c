@@ -655,7 +655,10 @@ static int32_t get_platform_ios(void) { return 8; }
 // video would never advance and BootstrapVideo.Update waits for time / length to reach its
 // threshold. Report a time past the end so the bootstrap carries on.
 static double video_time_ended(void *player) { (void)player; return 1e9; }
-static int gl_renderer(void) { const char *cl = GetCommandLineA(); return strstr(cl, "-force-gl") != NULL; }
+static int gl_renderer(void) {  // MK_GLES: set by our MarbleKnights.exe, which adds -force-gles30
+    const char *cl = GetCommandLineA();
+    return strstr(cl, "-force-gl") != NULL || (GetEnvironmentVariableA("MK_GLES", NULL, 0) > 0 && !strstr(cl, "-force-d3d"));
+}
 
 void *mk_input_icall(const char *name, void *fn);
 __declspec(dllexport) void il2cpp_add_internal_call(const char *name, void *method) {
