@@ -1,0 +1,6 @@
+__ROM__/
+private/
+generated/
+work/
+out/
+__pycache__/

@@ -1,0 +1,111 @@
+# 設計文件：iOS 版 Marble Knights → Android
+
+2026-11-03，Claude（Opus 5.5）。第一版，寫在里程碑 1 的 IL2CPP 那一半跑通之後。
+
+## 1. 結論（先講）
+
+**可行，而且最難驗證的那一半已經在 Thor 上跑起來了。** iOS 版 `UnityFramework` 原封不動地在 Android 上載入，`il2cpp_init` 成功、讀進 metadata、執行遊戲編譯好的 C# 程式碼、GC 與受控例外都正常。這證明「把 iOS 的 IL2CPP 程式碼當成函式庫，在 Android 上換掉系統層」這條路走得通，而且 ABI 的坑是有限、可以一個一個補的。
+
+還沒驗證、也最可能卡住的是**引擎那一半**：官方 Android 播放器 `libunity.so` 能不能接受 iOS 版的 `il2cpp_*`（同一個 Unity 版本，理論上 API 相同）、能不能讀 iOS 建置的資料檔，以及 **Metal 著色器要轉成 GLES／Vulkan**——這是最大的一塊工作。估計到能玩大約 **3–6 週**的集中工作（見第 7 節）。
+
+## 2. 跟 Project Dream 的差別
+
+| | Project Dream（Sonic Dream Team） | 我們（Marble Knights） |
+| --- | --- | --- |
+| 來源 | Mac 版，`GameAssembly.dylib` 是**獨立的** libil2cpp＋遊戲程式 | iOS 版，引擎、libil2cpp、遊戲程式、FMOD、外掛**全部靜態連在一個 `UnityFramework`** |
+| 架構 | x86_64／arm64 都有 | **只有 arm64** → Android（arm64）最直接；Windows x64 需要模擬，先不做 |
+| 系統層 | macOS → Windows | iOS（Darwin）→ Android（bionic，也是 Unix 系，比 Windows 接近） |
+| 著色器 | Metal → 目標 API | 同（Metal → GLES3 或 Vulkan） |
+
+因為 iOS 是一整包，我們把 `UnityFramework` 當成「libil2cpp＋遊戲」使用：它對外公開了 229 個 `il2cpp_*` 函式（含 `il2cpp_add_internal_call`），裡面的 iOS 引擎程式碼雖然也在，但我們不呼叫它（只讓它的靜態初始化跑完，因為 Unity 覆寫了 `operator new`，libil2cpp 也透過它配置記憶體）。
+
+## 3. UnityFramework 的分析結果
+
+細節與數字在 [`notes/2026-11-03-unityframework-analysis.md`](../notes/2026-11-03-unityframework-analysis.md)。重點：
+
+- `__TEXT,__text` 17 MB（引擎＋libil2cpp＋FMOD＋外掛），`__TEXT,il2cpp` 23 MB（**IL2CPP 產生的遊戲程式碼獨立一個 section**，112,885 個函式），全部 224,657 個函式。
+- 匯入 896 個符號，來自 24 個系統框架。用呼叫圖算過：**libil2cpp 與遊戲程式碼實際碰得到的只有** libSystem 約 215 個、libc++ 49 個、CoreFoundation 9 個、ObjC runtime 10 個；UIKit、Metal、AVFoundation 等都只有引擎在用。
+- 遊戲程式碼不經過 icall、**直接呼叫**的原生函式（`DllImport("__Internal")`）：FMOD 553 個（`FMOD5_*`／`FMOD_Studio_*`，靜態連結在裡面）、zlib 包裝 5 個（`CreateZStream` 等），以及約 60 個沒有名字的 ObjC 外掛函式（GameController、NSCalendar、NSLog、Game Center、觸覺回饋、指南針）。
+- 引擎相關的 icall 名稱約 1,200 個（字串表裡 2,402 條含簽章與不含簽章的版本）；其中 iOS 專用、Android 播放器不會註冊的約 30 個：`UnityEngine.iOS.Device::*`、`GameCenterPlatform::*`、`GcLeaderboard::*`、`UnhandledExceptionHandler::iOSNativeUnhandledExceptionHandler`。
+- 素材：`Data/` 的序列化檔目標平台是 iOS（9）；著色器**只有 Metal**（MSL 原始碼，`resources.assets`、`sharedassets0`、`unity_builtin_extra` 裡都是 `metal_stdlib`，沒有 GLES）；`Data/Raw/AssetBundles` 約 850 個檔、3.3 GB；聲音是 FMOD Studio 的 `.bank`。
+- 組件：62 個，包括 `MarbleQuest.dll`（2,609 類別）、`Rewired_Core`（輸入）、`FMODCSharp`、`Zenject`、`Cinemachine`、`AppleGameController`、`GameCenter`、`NiceVibrations`、`MagneticHeading`、`UnityEngine.AndroidJNIModule`（有，之後用得到）。
+
+## 4. 為什麼在 Android 上直接載入 Mach-O，而不是先轉成 ELF
+
+選了**執行期 Mach-O 載入器**（`loader/src/macho_loader.c`）：
+
+- 不管哪種做法，系統呼叫都要換、ABI 差異都要補；轉成 ELF 只是把「套用 rebase／bind」從執行期搬到離線，省不了工作，反而要多寫一個 ELF 產生器、還要處理 Mach-O 的 section 對齊與 16 KB 分頁假設。
+- 載入器很小（約 350 行），完全掌握每個匯入綁到哪裡；沒實作的匯入自動綁到「陷阱」（呼叫時記下符號名、回傳 0），一次執行就能列出還缺什麼。
+- 例外處理一樣要自己處理（見下），跟格式無關。
+- `__TEXT` 直接從檔案 `mmap` 成 R+X（Android 允許 shell 與 App 執行自己資料夾裡的檔案對映），資料段複製一份再套用 rebase／bind。不改任何一個指令。
+
+## 5. 架構
+
+### 5.1 現在的原型（`loader/probe/il2cpp_probe`）
+
+```
+il2cpp_probe（Android 執行檔）
+ ├─ macho_loader   對映 UnityFramework、rebase、bind（匯入 → Darwin 相容層）
+ ├─ macho_unwind   compact unwind → DWARF .eh_frame + .eh_frame_hdr，假的 dl_iterate_phdr 模組
+ ├─ darwin_libsystem / darwin_cxx / darwin_cf   iOS 系統函式的 Android 實作
+ └─ trap.S         沒實作的匯入、可變參數轉接、setjmp、___chkstk_darwin
+流程：載入 → 跑 553 個靜態初始化 → il2cpp_set_data_dir(Data/Managed) → il2cpp_init → 呼叫受控方法
+```
+
+### 5.2 目標（APK）
+
+```
+官方 Unity 2019.4.17f1 Android 播放器（Java UnityPlayerActivity、libmain.so、libunity.so）
+ └─ dlopen("libil2cpp.so") ← 我們的代理函式庫
+      ├─ 匯出 il2cpp-api-functions.h 的全部函式，轉呼叫 UnityFramework 裡同名的 _il2cpp_*
+      ├─ 內含現在的載入器與 Darwin 相容層
+      ├─ 補 iOS 專用 icall（iOS.Device、GameCenter…）與 ObjC 外掛函式的 Android 版
+      └─ FMOD 的輸出改走 AAudio／OpenSL
+assets/bin/Data   iOS 的 Data（序列化檔的平台欄位改成 Android、著色器補上 GLES3／Vulkan 程式）
+大型 AssetBundle  放 /sdcard/Android/data/<pkg>/files（3.3 GB，不塞進 APK）
+```
+
+`libunity.so` 註冊自己的 icall 時會呼叫我們轉過去的 `il2cpp_add_internal_call`，存進 iOS libil2cpp 的表；遊戲程式碼呼叫 icall 時用名字查（`il2cpp_codegen_resolve_icall`），就會拿到 Android 引擎的實作。兩邊是同一個 Unity 版本，物件與 icall 的記憶體配置應該一致。
+
+## 6. 找到並處理的 ABI 差異（Darwin arm64 vs Android AAPCS64）
+
+這些都已經在相容層裡處理；之後碰到新的就補在這裡：
+
+1. **C++ 建構子與解構子回傳 `this`**（x0）。呼叫端會直接用回傳值（`std::string` 複製建構後馬上 `stur q0, [x0, #0x18]`）。我們實作的 libc++ 建構子／解構子都要回傳物件。這是讓 `il2cpp_init` 過關的關鍵。
+2. **可變參數全部放在堆疊**，不像 AAPCS64 先用暫存器；`va_list` 是指向堆疊的 `char *`。`open`、`fcntl`、`ioctl`、`printf` 系列用組合語言轉接（`trap.S`），`vsnprintf` 系列把 `char *` 包成「暫存器區是空的」AAPCS64 `va_list`。
+3. 非可變參數的堆疊參數照**自然大小**排（不是每個 8 bytes）；目前碰到的函式都沒差，之後接外掛時要注意。
+4. 呼叫端負責把 8／16 位元參數延伸到 32 位元；Android 端呼叫 Mach-O 函式（例如 `libunity.so` 經 invoker 呼叫遊戲程式）時理論上可能出問題，目前沒看到，列為風險。
+5. **libc++ 用 alternate string layout**（`ldrsb [x, #0x17]` 判斷長短字串），命名空間是 `std::__1`；Unity 覆寫的 `operator new/delete` 在映像檔裡，我們的 `std::string` 實作也用它。
+6. **errno**：1–34 跟 Linux 一樣，35 以後不同（`EAGAIN` 35、`ETIMEDOUT` 60…），在 `__error()` 與失敗路徑轉換。
+7. 結構：`stat`（144 bytes）、`dirent`（`d_name[1024]`）、`utsname`（5×256）、`timeval`（`tv_usec` 是 32 位元＋未初始化的填充）、`sigaction`、`sockaddr`（BSD 有 `sa_len`）、`addrinfo`（`ai_addr`／`ai_canonname` 順序相反）。前四個已轉換；後三個要等用到網路時再做。
+8. 旗標與編號：`open`／`mmap`／`fcntl`、`sysconf`、`sysctl`、`setlocale` 的類別、訊號編號、`PTHREAD_MUTEX_RECURSIVE`（Darwin 2／bionic 1）、`PTHREAD_CREATE_DETACHED`（2／1）。
+9. **pthread 靜態初始化帶簽章**（`0x32AAABA7` 等）：第一次使用時換成 bionic 的物件；Darwin 的物件比 bionic 大，放得下。
+10. **jmp_buf**：Darwin 192 bytes，bionic 的 `setjmp` 會寫 256 bytes → 自己實作。
+11. **Mach thread／semaphore**：Boehm GC 在 Darwin 上用 `thread_suspend`／`thread_get_state` 停住其他執行緒 → 用即時訊號＋`ucontext` 模擬（已實作，還沒在多執行緒 GC 下壓力測試）。`dispatch_semaphore_*` 用 POSIX semaphore。
+12. **例外處理**：Mach-O 用 compact unwind，Android 的 libunwind 只讀 DWARF。我們把 111,927 個函式的 compact unwind 轉成 DWARF FDE（4.5 MB），做成 `.eh_frame_hdr` 二分搜尋表，再在 `dl_iterate_phdr` 裡多回報一個假模組。personality 用 NDK 的 `__gxx_personality_v0`，LSDA（`__gcc_except_tab`）格式相同可以直接用。
+13. `_dyld_*`、`getsectbynamefromheader_64`：讓 Boehm GC 把 `UnityFramework` 的 `__DATA` 當成根集合掃描。
+
+## 7. 剩下的工作與估計
+
+以「一個 Claude 工作階段集中做」的天數估計，範圍很寬是因為著色器與 `libunity.so` 還沒實際看過。
+
+| # | 工作 | 估計 | 風險 |
+| --- | --- | --- | --- |
+| A | **接 `libunity.so`**：做 `libil2cpp.so` 代理、包成最小 APK（官方播放器＋iOS 的 Data），確認 API 集合一致、icall 註冊與解析、補 iOS 專用 icall 的假實作，讓引擎走到第一個場景的 `Awake`／`Start` | 3–6 天 | 中：要先下載 Unity 2019.4.17f1 Android Build Support（**要問使用者**）。`libunity.so` 若直接呼叫非 API 的 libil2cpp 內部函式就要另外找 |
+| B | **資料檔**：序列化檔與 AssetBundle 的目標平台欄位、確認貼圖格式（ASTC 在 Adreno 可直接用；若有 PVRTC 要轉）、大型 bundle 放外部儲存 | 2–4 天 | 中：Unity 可能還會檢查其他平台相關的序列化欄位 |
+| C | **著色器**：Metal（MSL 原始碼）→ GLES 3.0 或 Vulkan。做法是寫 Unity HLSLcc 產生的 MSL 的轉譯器（結構很固定），把 GLES3 子程式補進 Shader 物件；或在執行期攔截 `libunity.so` 的著色器建立 | 7–15 天 | **高**：這是最大的一塊。要先統計有幾個不同的著色器與變體 |
+| D | **原生外掛**：FMOD 輸出（AudioUnit／AVAudioSession → AAudio，保留 iOS 版 FMOD，`.bank` 不用動）；約 60 個 ObjC 外掛函式改成 Android 版（手把用 Rewired／Unity 的 Android 輸入、觸覺回饋、指南針做空的）；需要一個把產生碼位址對回 C# 方法名的工具 | 3–5 天 | 低到中 |
+| E | **系統整合**：存檔路徑、Game Center／Apple Arcade 登入做假的、CloudKit 存檔改本機、`Application.platform`（可能要讓遊戲以為還在 iOS）、觸控與螢幕比例、App 前後景切換 | 3–5 天 | 中 |
+| F | 打包、在 Thor 上長時間遊玩測試、效能 | 2–4 天 | 低 |
+
+**合計約 20–39 天（3–6 週）**。比較早能看到畫面的路線：A → B → C 先做最少量的著色器（例如 UI 與不透明物件）→ 第一個場景能畫出來，大約 2 週。
+
+### 7.1 Windows x64
+
+iOS 版只有 arm64 機器碼，Windows x64 要嘛做 arm64 → x64 的指令轉譯（等於寫模擬器），要嘛在 Windows 上再跑一層 Android（WSA 已停止支援），都不划算。sonicmachine 是 Windows on ARM，但 Unity 2019.4 沒有 Windows arm64 播放器。**建議 Windows 先不做**；Android 版完成後，用 Thor 或其他 Android 裝置玩。
+
+## 8. 下一步
+
+1. 問使用者：要不要從 Unity 官方下載 **Unity 2019.4.17f1 的 Android Build Support（IL2CPP）**。只需要 `PlaybackEngines/AndroidPlayer` 裡的 `libunity.so`、`libmain.so`、Java 播放器與符號檔（`libunity.sym.so`，方便除錯）。
+2. 做 A：`libil2cpp.so` 代理＋最小 APK。
+3. 同時統計著色器（數量、變體、用到的 MSL 功能），決定 C 的做法。
