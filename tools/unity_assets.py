@@ -329,7 +329,7 @@ def write_bundle(path, files, unity_version="2019.4.17f1", block=0x20000, compre
     stream = bytearray()
     nodes = []
     for name, data in files.items():
-        nodes.append((len(stream), len(data), 4 if name.endswith((".resS", ".resource")) else 4, name))
+        nodes.append((len(stream), len(data), 0 if name.endswith((".resS", ".resource")) else 4, name))
         stream += data
     blocks, comp = [], bytearray()
     for i in range(0, len(stream), block):

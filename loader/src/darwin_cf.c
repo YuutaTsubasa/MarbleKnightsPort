@@ -23,8 +23,12 @@ static cfstr *mkstr(const char *s) {
     return c;
 }
 
-// Locale keys are compared by address.
-void *d_kCFLocaleCountryCode, *d_kCFLocaleLanguageCode, *d_kCFLocaleScriptCode;
+// Locale keys are CFStringRef globals; callers load the value and we compare by identity,
+// so each key needs its own object.
+static cfstr k_country = { d___CFConstantStringClassReference, 0x7c8, "kCFLocaleCountryCode", 20 };
+static cfstr k_language = { d___CFConstantStringClassReference, 0x7c8, "kCFLocaleLanguageCode", 21 };
+static cfstr k_script = { d___CFConstantStringClassReference, 0x7c8, "kCFLocaleScriptCode", 19 };
+void *d_kCFLocaleCountryCode = &k_country, *d_kCFLocaleLanguageCode = &k_language, *d_kCFLocaleScriptCode = &k_script;
 void *d_kCFAllocatorDefault, *d_kCFAllocatorNull;
 static uint8_t g_locale[16];
 

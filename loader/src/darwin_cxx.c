@@ -209,8 +209,6 @@ static int cmp_uint(const void *a, const void *b) { unsigned x = *(const unsigne
 static void s_sort_int(int *f, int *l, void *cmp) { (void)cmp; qsort(f, l - f, sizeof(int), cmp_int); }
 static void s_sort_uint(unsigned *f, unsigned *l, void *cmp) { (void)cmp; qsort(f, l - f, sizeof(unsigned), cmp_uint); }
 
-extern void darwin_str_plus(void);
-
 // C++ ABI from the NDK's libc++abi / libunwind.
 extern void *__cxa_allocate_exception(size_t);
 extern void __cxa_free_exception(void *);
@@ -226,6 +224,17 @@ extern int __gxx_personality_v0();
 extern void _Unwind_Resume(void *);
 extern char _ZTVN10__cxxabiv117__class_type_infoE[], _ZTVN10__cxxabiv120__si_class_type_infoE[],
     _ZTVN10__cxxabiv121__vmi_class_type_infoE[], _ZTISt8bad_cast[], _ZTVSt12length_error[];
+
+extern void darwin_str_plus(void);
+
+// Every managed exception is a C++ throw of Il2CppExceptionWrapper; let the host log it first.
+__attribute__((visibility("default"))) void (*mk_throw_hook)(void *thrown, void *tinfo);
+static void __attribute__((noreturn)) mk_cxa_throw(void *obj, void *tinfo, void (*dest)(void *)) {
+    if (mk_throw_hook) mk_throw_hook(obj, tinfo);
+    __cxa_throw(obj, tinfo, dest);
+    __builtin_unreachable();
+}
+
 
 #define S "St3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE"
 static const darwin_sym g_cxx[] = {
@@ -266,7 +275,7 @@ static const darwin_sym g_cxx[] = {
     { "__cxa_begin_catch", __cxa_begin_catch },
     { "__cxa_end_catch", __cxa_end_catch },
     { "__cxa_rethrow", __cxa_rethrow },
-    { "__cxa_throw", __cxa_throw },
+    { "__cxa_throw", mk_cxa_throw },
     { "__cxa_call_unexpected", __cxa_call_unexpected },
     { "__cxa_guard_acquire", __cxa_guard_acquire },
     { "__cxa_guard_release", __cxa_guard_release },
