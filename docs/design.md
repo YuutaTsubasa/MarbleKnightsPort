@@ -205,3 +205,27 @@ iOS 版 FMOD（2.00.10）只會輸出到 AudioUnit／AVAudioSession。做法（`
 ## 17. 震動（2026-11-03）
 
 NiceVibrations 在 iOS 走 `MMVibrationManager.SelectionHaptic()` 等 extern（9 個原生函式，`0x20901c`–`0x2092ac`）。換成 `loader/proxy/haptics.c`：在主執行緒用 JNI 取得 `ActivityThread.currentApplication()` → `getSystemService("vibrator")`，播放 `VibrationEffect.createPredefined`（selection／light → TICK、medium → CLICK、heavy／failure → HEAVY_CLICK、success／warning → DOUBLE_CLICK）。Manifest 加了 `VIBRATE` 權限。驗證：除錯模式下開機時觸發一次，Thor 的震動驅動回報 `perform effect 0`。遊戲本身主要在傾斜操作（`CustomTiltControl.HandleHaptics`）時震動。
+
+## 18. Install flow (2026-11-03)
+
+- The 3.4 GB of StreamingAssets (shader-patched AssetBundles + FMOD banks) live in
+  `/sdcard/MarbleKnights/Raw`, outside the app's own folder, so uninstalling or reinstalling the APK
+  keeps them. The manifest asks for READ_EXTERNAL_STORAGE with `requestLegacyExternalStorage`
+  (targetSdk 29), and `install -g` grants it.
+- The proxy's `Application.streamingAssetsPath` icall returns that folder when
+  `AssetBundles/ios/ios` is there, otherwise `<external files>/Raw` as before.
+- `tools/install-thor.sh` does everything: build the proxy and APK, install, and if the shared folder is
+  missing, either move an existing app-folder copy (instant, same filesystem) or push from
+  `work/raw-android` + `work/patched/Raw` with the `ios` bundle names.
+
+## 19. Tilt (2026-11-03)
+
+- `CustomTiltControl` reads Unity's `Input.gyro.attitude`; the Android player implements it with the
+  rotation-vector sensor, so no bridge is needed. Checked on Thor: enabled → unit quaternion
+  (-0.067, 0.006, -0.485, -0.872) at rest.
+- The game turns the gyro on only in a level when tilt is selected (`iOSAttackButton.Update` →
+  `ToggleTiltControl`).
+- The `MagneticHeading` plugin (iOS compass, used to keep the heading) is replaced by stubs that report
+  "no heading" (`loader/proxy/tilt.c`); the game then uses the attitude alone.
+- Not verified: the axis convention while actually tilting (iOS vs Android attitude frames) — needs
+  someone holding the device.

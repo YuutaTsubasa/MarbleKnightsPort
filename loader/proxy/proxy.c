@@ -237,6 +237,7 @@ static void trace_invoke(const void *m, void **params);
 static void ck_pump(void);
 static void agc_pump(void);
 void mk_audio_pause(int paused);
+void mk_tilt_debug(void);
 // The engine sends OnApplicationPause(bool) to every listening MonoBehaviour; follow the first one.
 extern void *il2cpp_method_get_class(const void *);
 extern const char *il2cpp_class_get_name(void *);
@@ -251,7 +252,12 @@ static void watch_pause(const void *m, void **params) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
         double t = ts.tv_sec + ts.tv_nsec / 1e9;
         if (!t_last) t_last = t;
-        if (++frames, t - t_last >= 10) { LOG("fps %.1f", frames / (t - t_last)); frames = 0; t_last = t; }
+        if (++frames, t - t_last >= 10) {
+            LOG("fps %.1f", frames / (t - t_last));
+            frames = 0;
+            t_last = t;
+            if (g_debug) mk_tilt_debug();
+        }
         return;
     }
     const char *n = il2cpp_method_get_name(m);
@@ -518,12 +524,13 @@ static void patch_cloudkit(void);
 static void patch_gamecenter(void);
 static void patch_agc(void);
 typedef struct { uintptr_t off; void *fn; const char *name; } mk_native;
-extern const mk_native mk_haptic_natives[];
+extern const mk_native mk_haptic_natives[], mk_tilt_natives[];
 static void patch_image(void) {
     patch_cloudkit();
     patch_gamecenter();
     patch_agc();
     for (const mk_native *n = mk_haptic_natives; n->name; n++) redirect_image_function(n->off, n->fn, n->name);
+    for (const mk_native *n = mk_tilt_natives; n->name; n++) redirect_image_function(n->off, n->fn, n->name);
     // FMOD_Studio_System_Initialize: stp/mov/ldp/b <impl> (UnityFramework 2.3.1)
     uintptr_t off = (uintptr_t)mk_export(&g_img, "_FMOD_Studio_System_Initialize") - (uintptr_t)g_img.base;
     uint32_t *p = (uint32_t *)(g_img.base + off);
