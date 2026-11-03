@@ -106,6 +106,22 @@ iOS 版只有 arm64 機器碼，Windows x64 要嘛做 arm64 → x64 的指令轉
 
 ## 8. 下一步
 
-1. 問使用者：要不要從 Unity 官方下載 **Unity 2019.4.17f1 的 Android Build Support（IL2CPP）**。只需要 `PlaybackEngines/AndroidPlayer` 裡的 `libunity.so`、`libmain.so`、Java 播放器與符號檔（`libunity.sym.so`，方便除錯）。
-2. 做 A：`libil2cpp.so` 代理＋最小 APK。
-3. 同時統計著色器（數量、變體、用到的 MSL 功能），決定 C 的做法。
+1. ~~下載 Unity 2019.4.17f1 Android Build Support~~（2026-11-03 使用者同意，已完成）。
+2. ~~做 A：`libil2cpp.so` 代理＋最小 APK~~（已完成，見第 9 節）。
+3. **C：著色器**。先統計數量、變體與用到的 MSL 功能，再決定寫轉譯器還是執行期攔截。
+4. 片頭影片（Apple Arcade 標誌）放在壓縮的 AssetBundle 裡，Android 的影片播放器讀不到（`AndroidVideoMedia::OpenExtractor could not translate archive:/CAB-…resource`）→ 跳過，或解出來放成檔案。
+
+## 9. 接上官方 Android 播放器（2026-11-03）
+
+- 從 download.unity3d.com 下載 `UnitySetup-Android-Support-for-Editor-2019.4.17f1.exe`（239 MB，簽章 Unity Technologies ApS 有效），用 7-Zip 解開，不執行安裝程式。放在 `work/unity/`。
+- `libunity.so` 用 dlsym 找的 222 個 `il2cpp_*` 函式，**全部**在 iOS 版 `UnityFramework` 的 229 個匯出裡。
+- 代理 `libil2cpp.so`（`loader/proxy/`）：被載入時從 App 的 native lib 資料夾載入 `libmkframework.so`（就是 `UnityFramework` 改名，讓安裝程式把它解出來），跑初始化，把 229 個匯出用跳板轉進去。另外用 C 包了幾個：
+  - `il2cpp_runtime_invoke*`、`il2cpp_method_get_param_count` 收到 NULL 時不當機：iOS 版剝掉了 `UnityAnalyticsModule`，但 Android 引擎載入場景時還是會呼叫 `AnalyticsSessionInfo.CallSessionStateChanged`。
+  - `il2cpp_add_internal_call`：換掉 `Application.get_streamingAssetsPath`，指到外部儲存（見下）。
+  - `il2cpp_set_data_dir`：記下 App 的外部 files 資料夾。
+- **在記憶體裡改 `libunity.so` 兩個指令**（不改檔案）：`SerializedFile::ReadMetadata<false/true>` 讀出檔案的目標平台後跟 13（Android）比較，不同就拒絕載入。把 `ldr w1, [sp, #0xd8]` 改成 `mov w1, #13`（位移 0x6207e4、0x621560，用 Unity 自己的 `libunity.sym.so` 找到；改之前先比對原指令）。這樣 iOS 建置的 `globalgamemanagers`、場景，**以及 3.3 GB 的 AssetBundle 都不用重新打包**。
+- APK（`tools/build_apk.py`，產物在 `out/`）：官方的 `classes.dex`＋從 `Source/` 編的 `UnityPlayerActivity`（`classes2.dex`）、`libmain.so`、`libunity.so`、我們的 `libil2cpp.so`、`libmkframework.so`、`assets/bin/Data`（iOS 的 Data，不含 Raw，不壓縮）。用本機 debug 金鑰簽。
+- StreamingAssets（`Data/Raw`：AssetBundle＋FMOD `.bank`）放在 Thor 的 `/sdcard/Android/data/com.yuutatsubasa.marbleknights/files/Raw`（`tools/thor-push-raw.sh`）。遊戲用平台名稱決定資料夾，所以 `AssetBundles/ios/ios` 改名成 `AssetBundles/android/android`。adbd 在這裡建不了多層資料夾、一次推整個資料夾也會中斷，所以先用 `adb shell mkdir -p` 再逐檔推。
+- 結果（Thor）：`il2cpp_init` 在 `libunity.so` 裡回傳 1 → 讀 `globalgamemanagers` → GLES3 初始化 → `PlayerStartFirstScene` → 遊戲腳本開始跑（Apple Game Controller 管理器、AchievementTracker、「Initialized data!」、Bootstrap、AssetBundle 載入）。畫面是**全螢幕洋紅色**：Unity 的錯誤著色器，因為著色器只有 Metal 版（log：`Desired shader compiler platform 5 is not available in shader blob`）。
+
+估計更新：A 與 B 大部分已經做完。剩下最大的是 **C（著色器）**，其次是 D、E。到能玩估計再 **2.5–5 週**。

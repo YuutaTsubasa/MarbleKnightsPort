@@ -17,7 +17,7 @@
 - 真的執行 iOS 版編譯好的 C# 程式：`String.Concat` 回傳 "Marble Knights"；GC 正常回收。
 - 受控例外可以拋出並接住（`Int32.Parse` → `FormatException`）：已把 Mach-O 的 compact unwind 轉成 DWARF 給 Android 的 libunwind 用。
 
-下一步是接上官方 Android 播放器（需要下載 Unity 2019.4.17f1 的 Android 支援，**要先問使用者**）。完整的設計、風險與工作量估計在 [docs/design.md](docs/design.md)。
+同一天也接上了**官方 Unity 2019.4.17f1 Android 播放器**：代理 `libil2cpp.so` 把 API 轉進 iOS 的程式碼，引擎直接讀 iOS 建置的資料（在記憶體裡關掉 `libunity.so` 的目標平台檢查），跑到第一個場景，遊戲腳本與 AssetBundle 載入都在動。畫面目前是全螢幕洋紅色（錯誤著色器）：**下一步是把 Metal 著色器轉成 GLES3**。設計、風險與工作量估計在 [docs/design.md](docs/design.md)。
 
 ## 目錄
 
@@ -45,3 +45,11 @@ bash tools/thor-run.sh --sync MK_TEST_EXCEPTION=1
 ```
 
 `--sync` 會把 `UnityFramework` 和 `Data/Managed` 推到 Thor 的 `/data/local/tmp/mk`。腳本會拿 `thor` 鎖。
+
+完整 APK（需要 `work/unity/AndroidPlayer`：用 7-Zip 解開 Unity 官方的 Android Support 安裝程式；`work/raw-android`：IPA 的 `Data/Raw`，`AssetBundles/ios` 改名 `android`）：
+
+```bash
+python -I tools/build_apk.py      # → out/marbleknights-private.apk（只裝在自己的裝置）
+bash tools/thor-push-raw.sh       # 第一次：把 Data/Raw（3.4 GB）推到 App 的外部 files 資料夾
+bash tools/thor-apk.sh 45         # 安裝、啟動、抓 logcat 與截圖到 work/
+```
