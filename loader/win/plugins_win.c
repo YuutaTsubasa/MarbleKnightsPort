@@ -207,6 +207,11 @@ static void agc_get(cpu *c) {  // 40-byte struct: Apple returns it through the x
     apple_controller p;
     if (i >= 0 && i < g_agc_known) p = pad_state(g_agc_slot[i]);
     else memset(&p, 0, sizeof(p));
+    static unsigned calls, last[4];
+    unsigned bits = (unsigned)p.a | p.b << 1 | p.x << 2 | p.y << 3 | p.lb << 4 | p.rb << 5 | p.lt << 6 | p.rt << 7 | p.menu << 8 |
+                    p.options << 9 | (p.lx > 0.5f) << 10 | (p.lx < -0.5f) << 11 | (p.ly > 0.5f) << 12 | (p.ly < -0.5f) << 13;
+    if (!calls++) mk_log("AGCGetController first call (index %d)", i);
+    if (i >= 0 && i < 4 && bits != last[i]) { last[i] = bits; mk_log("pad %d state %04x", i, bits); }
     memcpy((void *)(uintptr_t)c->x[8], &p, sizeof(p));
 }
 // The game's controller index follows Apple's GCController.controllers: a compact list in connection

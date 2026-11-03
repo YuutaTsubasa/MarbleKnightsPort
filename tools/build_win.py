@@ -80,6 +80,9 @@ def main():
         for name in files:
             s = os.path.join(dirpath, name)
             p = os.path.join(WORK, "patched", "Data", rel, name)  # GLES3-patched shaders etc.
+            pw = os.path.join(WORK, "win", "patched-data", rel, name)  # PVRTC decoded (tools/win_textures.py)
+            if os.path.exists(pw):
+                p = pw
             d = os.path.join(DATA, rel, name)
             shutil.copy2(p if os.path.exists(p) else s, d)
             if patch_platform(d, WIN64):
