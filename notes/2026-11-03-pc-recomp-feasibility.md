@@ -139,3 +139,7 @@ Rewired 會印「ControllerDataFiles is missing critical data!」，要和 Andro
 
 - **開頭 Apple Arcade／WayForward 標誌一片黑**：這些是 VideoClip（H.264 mp4）。Windows 播放器只在 D3D11／12 下用 Media Foundation 解碼影片，這個版本跑 GLES3，Player.log 寫「Microsoft Media Foundation video decoding to texture disabled」。Unity 內建的 VP8 解碼器不挑圖形 API，所以 `tools/win_videos.py` 用 ffmpeg 把 11 段影片（9 段 Apple Arcade 各比例、WF 標誌、`Intro_Video`）轉成 VP8＋Vorbis 的 WebM（最高 1080 行），改 VideoClip 的大小、尺寸與路徑副檔名。bundle 直接改寫；`sharedassets0` 的放進 `work/win/patched-data`。實際畫面待使用者確認。
 - **觸控**：滑鼠觸控事件確實送進遊戲（log 有拖曳），但關卡裡沒有呼叫到 `RectTransformUtility.ScreenPointToLocalPointInRectangle`，表示畫面上的搖桿（`UIJoystick`）沒收到 pointer 事件。遊戲的觸控 HUD（`iOSMobileHUD`／`iOSAttackButton`）只在「傾斜／觸控控制器」被玩家使用時（`UI_ControllerWidget::IsTiltControllerUsed`，比對使用中控制器的名字）才作用；存檔是 `controlMethod: Touch`。使用者測試那次手把開遊戲時是連著的，中途才斷線，所以手把可能一直佔著玩家。下一步：手把關掉再開遊戲測；仍不行就在關卡裡記錄使用中的控制器。
+- **第二輪（同一天）**：第一版轉的 VP8 帶 Vorbis 聲音，使用者測還是黑的。推測：這款遊戲關掉 Unity 自己的聲音（用 FMOD），影片如果有音軌會跟著停住的聲音時鐘，`VideoPlayer.time` 一直是 0，只顯示第一格（黑）。改成不帶音軌（開頭影片的聲音本來就不靠它）；bundle 也改成不壓縮，跟原版一樣（播放器要從封存檔直接串流影片）。
+- 自己開遊戲測時要注意：視窗沒拿到焦點，Unity 會暫停（啟動流程停在 `Bootstrap - initalizing item 1`），看起來像當掉，其實是測法的問題；而且 ffmpeg 的 gdigrab 抓得到畫面，但會干擾使用者，盡量讓使用者測。
+- **手把只在用過之後才算連上**：使用者以為拔掉了，但 XInput 一直回報 0 號手把連著（Windows 也看得到 Xbox One 控制器）。現在手把要按過鍵、扳機或推過搖桿才報給遊戲（AppleGameController 與 Unity 搖桿名單都一樣；沒用過的位置回報空字串，跟 Unity 表示空位的方式一樣），桌上放著不碰的手把就不會搶走觸控。
+
