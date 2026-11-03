@@ -185,3 +185,5 @@ iOS 版 FMOD（2.00.10）只會輸出到 AudioUnit／AVAudioSession。做法（`
 - 俄文 bundle：上一輪修好 bundle 節點旗標後已經正常。
 - 片頭影片：需要 Unity 的 `Hidden/VideoDecodeAndroid` 著色器，它只在 Android 建置的內建資源裡（播放器套件沒有），先不處理（只影響 Apple Arcade 標誌那段影片）。
 - 還沒驗證：手把（Thor 內建）、聲音實際聽起來、長時間遊玩。
+
+補充：存檔現在會保留，第二次開啟直接進主選單（Single Player／Multiplayer／Join Party），點 Single Player 進到 Player Setup。**手把還不能用**：遊戲用自己的 `AppleGameController` 外掛（Apple GCController，ObjC）讀手把，目前是空的；而且 `adb shell input gamepad` 注入的按鍵沒有真的輸入裝置，Unity 不會當成搖桿。要支援 Thor 內建手把，得把這個外掛換成 Android 版（例如用 Unity 的 `Input` 搖桿 API 實作它的原生函式），並且要拿實機手把測。

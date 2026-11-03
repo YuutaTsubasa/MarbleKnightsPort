@@ -23,6 +23,7 @@ for t in ${TAPS:-}; do
   sleep $((at - elapsed)); elapsed=$at
   "${dev[@]}" exec-out screencap -p > "$here/work/screen_${at}s.png" || true
   case "$xy" in
+    pad=*) for k in $(echo ${xy#pad=} | tr , " "); do "${dev[@]}" shell input gamepad -d 0 keyevent --longpress $k; done; echo "pad ${xy#pad=} at ${at}s" ;;
     key=*) "${dev[@]}" shell input -d 0 keyevent ${xy#key=}; echo "key ${xy#key=} at ${at}s" ;;
     resume) "${dev[@]}" shell am start -n $pkg/com.unity3d.player.UnityPlayerActivity > /dev/null; echo "resume at ${at}s" ;;
     drag=*) q=${xy#drag=}; IFS=, read -r x1 y1 x2 y2 <<< "$q"; "${dev[@]}" shell input -d 0 swipe $x1 $y1 $x2 $y2 1500; echo "drag $q at ${at}s" ;;
