@@ -27,7 +27,7 @@ add_custom_command(OUTPUT ${API_STUBS}
     COMMAND Python3::Interpreter -I ${CMAKE_CURRENT_SOURCE_DIR}/../tools/gen_api_stubs.py
             ${CMAKE_CURRENT_SOURCE_DIR}/proxy/il2cpp_api.txt ${API_STUBS}
     DEPENDS proxy/il2cpp_api.txt ../tools/gen_api_stubs.py)
-add_library(il2cpp SHARED proxy/proxy.c ${API_STUBS})
-target_link_libraries(il2cpp mkdarwin)
+add_library(il2cpp SHARED proxy/proxy.c proxy/fmod_audio.c ${API_STUBS})
+target_link_libraries(il2cpp mkdarwin aaudio)
 target_link_options(il2cpp PRIVATE -Wl,--exclude-libs,ALL -Wl,-Bsymbolic)
 set_target_properties(il2cpp PROPERTIES LINKER_LANGUAGE CXX)

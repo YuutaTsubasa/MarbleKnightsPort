@@ -166,3 +166,11 @@ iOS 版只有 arm64 機器碼，Windows x64 要嘛做 arm64 → x64 的指令轉
 結果（Thor）：標題 → 存檔版本對話框 → 教學關卡「Welcome to Marble Knights」→「Tap and drag your Left Thumb to move.」→ 拖曳之後騎士移動、教學前進到下一步（「Some treasure is strewn about」）。這一輪沒有任何受控例外。截圖：`work/2026-11-03-tutorial.png`、`work/2026-11-03-gameplay.png`。
 
 還沒做：聲音（FMOD 目前無聲）、有一個 Shader 沒有 GLES3 程式（log 出現一次 `platform 9 is not available`，多半是 instancing 變體）、片頭影片的解碼著色器（`VideoDecoder::Blit failed`，畫面可能是黑的）、俄文 bundle、手把與長時間遊玩測試。
+
+## 13. 聲音：FMOD → AAudio（2026-11-03）
+
+iOS 版 FMOD（2.00.10）只會輸出到 AudioUnit／AVAudioSession。做法（`loader/proxy/fmod_audio.c`）：FMOD 仍用 no-sound 輸出（它照樣以實際時間混音），在 master channel group 的最前端（`FMOD_CHANNELCONTROL_DSP_HEAD`）插一個自己的 DSP（`FMOD_DSP_DESCRIPTION`，plugin SDK 110），把最終混音複製到環狀緩衝區，再由 AAudio 串流（float、立體聲、FMOD 的取樣率 24 kHz、低延遲、`USAGE_GAME`）播放。兩邊時脈的小差距由環狀緩衝區吸收（過多就跳過、不足就補靜音）。不用 FMOD 的輸出外掛 API，是因為那個結構體跟 FMOD 版本綁得很緊。
+
+驗證：AAudio 串流啟動成功，`dumpsys media.audio_flinger` 顯示這條音軌有實際訊號（約 -13 dB，不是 -inf）。**還沒用耳朵確認**。App 切到背景時的暫停（`mk_audio_pause`）還沒接上。
+
+另外跑了 3 分多鐘的自動操作（拖曳、點 Continue）：騎士移動、吃掉大部分金幣，沒有例外、沒有當機。

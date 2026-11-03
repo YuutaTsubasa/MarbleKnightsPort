@@ -447,6 +447,7 @@ static void redirect_image_function(uintptr_t off, void *target, const char *wha
 // FMOD: iOS output goes through AudioUnit/AVAudioSession, which we don't provide yet.
 // Start FMOD Studio with the no-sound output so the game's audio calls succeed.
 typedef int (*studio_init_fn)(void *, int, unsigned, unsigned, void *);
+void mk_fmod_attach_output(mk_image *img, void *core);
 static studio_init_fn g_studio_init_impl;
 static int studio_initialize_hook(void *studio, int maxch, unsigned sflags, unsigned flags, void *extra) {
     int (*get_core)(void *, void **) = mk_export(&g_img, "_FMOD_Studio_System_GetCoreSystem");
@@ -455,6 +456,7 @@ static int studio_initialize_hook(void *studio, int maxch, unsigned sflags, unsi
     int r1 = get_core(studio, &core), r2 = core ? set_output(core, 2 /* FMOD_OUTPUTTYPE_NOSOUND */) : -1;
     int r = g_studio_init_impl(studio, maxch, sflags, flags, extra);
     LOG("FMOD Studio initialize with NOSOUND output: core=%d setOutput=%d init=%d", r1, r2, r);
+    if (!r && core) mk_fmod_attach_output(&g_img, core);
     return r;
 }
 
