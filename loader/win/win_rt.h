@@ -15,6 +15,7 @@ mk_import mk_cxx_lookup(const char *sym);     // darwin_win_cxx.c
 void mk_cxx_init(void);
 mk_import_fn mk_libcxx_lookup(const char *sym);  // darwin_win_libcxx.c
 void mk_libcxx_init(void);
+mk_import mk_cf_lookup(const char *sym);        // darwin_win_cf.c
 const char *mk_exception_type_name(void *exception_pointers);
 void mk_sys_init(void);
 void mk_imp(cpu *c, int k);  // generated imp_N(c) call this

@@ -8,6 +8,7 @@
 // x0 = header ("_Unwind_Exception *") and x1 = selector, as on arm64; it then calls
 // __cxa_begin_catch(x0) or, after a cleanup, _Unwind_Resume(x0), which raises again.
 #define _CRT_SECURE_NO_WARNINGS
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
@@ -94,10 +95,43 @@ const char *mk_exception_type_name(void *exception_pointers) {
 #define P(i) ((void *)(uintptr_t)X(i))
 SHIM(__cxa_allocate_exception) { uint8_t *h = calloc(1, HDR + X(0)); RET(OBJ(h)); }
 SHIM(__cxa_free_exception) { free((uint8_t *)P(0) - HDR); }
+// MK_TRACE_THROW=1: log each throw with its managed message (Il2CppExceptionWrapper -> Il2CppException:
+// message string at +24, UTF-16 length at +16) and the GameAssembly offsets of the frames (resolve
+// with llvm-symbolizer against GameAssembly.pdb: f_<offset> names the UnityFramework function)
+static void trace_throw(exc_hdr *h, void *obj) {
+    static int on = -1;
+    if (on < 0) { char v[4]; on = GetEnvironmentVariableA("MK_TRACE_THROW", v, sizeof(v)) > 0; }
+    if (!on) return;
+    char msg[160] = "";
+    const char *tn = h->ti ? *(const char **)(uintptr_t)(h->ti + 8) : "?";
+    if (tn && strstr(tn, "Il2CppExceptionWrapper")) {
+        uint8_t *ex = *(uint8_t **)obj;
+        uint8_t *s = ex ? *(uint8_t **)(ex + 24) : NULL;
+        if (s) {
+            int32_t n = *(int32_t *)(s + 16);
+            const uint16_t *u = (const uint16_t *)(s + 20);
+            int k = 0;
+            for (; k < n && k < (int)sizeof(msg) - 1; k++) msg[k] = u[k] < 128 ? (char)u[k] : '?';
+            msg[k] = 0;
+        }
+    }
+    void *bt[48];
+    USHORT nf = RtlCaptureStackBackTrace(1, 48, bt, NULL);
+    HMODULE me;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)trace_throw, &me);
+    char line[2048];
+    int n = snprintf(line, sizeof(line), "throw %s \"%s\" frames:", tn, msg);
+    for (USHORT i = 0; i < nf && n < (int)sizeof(line) - 24; i++) {
+        uintptr_t a = (uintptr_t)bt[i], b = (uintptr_t)me;
+        if (a > b && a - b < 0x20000000) n += snprintf(line + n, sizeof(line) - n, " %llx", (unsigned long long)(a - b));
+    }
+    mk_log("%s", line);
+}
 SHIM(__cxa_throw) {
     exc_hdr *h = (exc_hdr *)((uint8_t *)P(0) - HDR);
     h->ti = X(1);
     h->dtor = X(2);
+    trace_throw(h, P(0));
     raise_hdr(h);
 }
 SHIM(_Unwind_Resume) { raise_hdr(P(0)); }

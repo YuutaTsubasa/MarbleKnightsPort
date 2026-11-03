@@ -39,6 +39,32 @@ def patch_platform(path, target):
     return False
 
 
+def link_streaming_assets(sa):
+    """StreamingAssets as hard links (no copy): work/raw-android with the shader-patched files of
+    work/patched/Raw, under the iOS names the game asks for (AssetBundles/ios/ios...)."""
+    raw, patched = os.path.join(WORK, "raw-android"), os.path.join(WORK, "patched", "Raw")
+    if os.path.islink(sa) or (os.path.isdir(sa) and not os.listdir(sa)) or os.path.isfile(sa):
+        os.remove(sa) if os.path.isfile(sa) else os.rmdir(sa)
+    elif os.path.isdir(sa) and os.path.exists(os.path.join(sa, "AssetBundles", "ios", "ios")):
+        return
+    elif os.path.isdir(sa):
+        subprocess.run(["cmd", "/c", "rmdir", sa], check=False)  # an old junction
+    n = 0
+    for dirpath, _, files in os.walk(raw):
+        rel = os.path.relpath(dirpath, raw)
+        for name in files:
+            r = os.path.join(rel, name)
+            src = os.path.join(patched, r) if os.path.exists(os.path.join(patched, r)) else os.path.join(raw, r)
+            dst = os.path.join(sa, r.replace(os.path.join("AssetBundles", "android"), os.path.join("AssetBundles", "ios")))
+            if dst.endswith(os.path.join("ios", "android")):
+                dst = dst[:-len("android")] + "ios"
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if not os.path.exists(dst):
+                os.link(src, dst)
+                n += 1
+    print(f"StreamingAssets: {n} hard links")
+
+
 def main():
     os.makedirs(DATA, exist_ok=True)
     shutil.copy2(os.path.join(PLAYER, "WindowsPlayer.exe"), os.path.join(OUT, "MarbleKnights.exe"))
@@ -67,10 +93,7 @@ def main():
     res = os.path.join(src, "Managed", "Resources")
     if os.path.isdir(res):
         shutil.copytree(res, os.path.join(DATA, "il2cpp_data", "Resources"), dirs_exist_ok=True)
-    sa = os.path.join(DATA, "StreamingAssets")
-    raw = os.path.join(WORK, "raw-android")
-    if not os.path.exists(sa) and os.path.isdir(raw):
-        subprocess.run(["cmd", "/c", "mklink", "/J", sa, raw], check=True, stdout=subprocess.DEVNULL)
+    link_streaming_assets(os.path.join(DATA, "StreamingAssets"))
     ga = sys.argv[sys.argv.index("--gameassembly") + 1] if "--gameassembly" in sys.argv else None
     if ga:
         shutil.copy2(ga, os.path.join(OUT, "GameAssembly.dll"))

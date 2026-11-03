@@ -10,6 +10,7 @@
 //  - the il2cpp API exports (api_wrappers.c, generated) enter the guest through mk_guest_call
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +35,8 @@ extern const int mk_rc_nstubs;
 extern const char *const mk_api_names[];
 extern const int mk_api_count;
 
+static uint64_t g_exports_n;
+static struct { uint64_t off; char *name; } *g_exports;
 static FILE *g_log;
 static CRITICAL_SECTION g_log_mu;
 static char g_dir[MAX_PATH];  // exe directory, with trailing backslash
@@ -92,7 +95,10 @@ void mk_imp(cpu *c, int k) {
 }
 
 // ---- host callbacks ----------------------------------------------------------------------------
-typedef struct { void *fn; const char *what; int logged; } host_cb;
+// one argument of an icall: where the guest put it and how Windows wants it
+typedef struct { uint8_t src, idx, size, fp; uint16_t stack_off; } icall_arg;  // src 0 = x reg, 1 = v reg, 2 = stack
+typedef struct { int n; int8_t ret_fp, ret_size, ret_signed; icall_arg a[24]; } icall_sig;
+typedef struct { void *fn; const char *what; int logged; int sig_state; icall_sig *sig; } host_cb;
 static host_cb g_cbs[1 << 16];
 static volatile LONG g_ncbs;
 
@@ -106,12 +112,160 @@ uint64_t mk_host_callback(void *fn, const char *what) {
     return (uint64_t)(uintptr_t)(g_markers + MARK_CB + 16u * (uint32_t)i);
 }
 
-// Engine callbacks and icalls: integer/pointer arguments only for now (x0-x7 -> rcx, rdx, r8, r9, stack).
+// ---- calling engine functions (icalls, callbacks) ---------------------------------------------
+// Apple arm64 numbers integer and floating-point arguments separately (x0-x7, v0-v7), then packs
+// the rest on the stack by natural size; Windows x64 gives argument i the i-th slot (rcx/rdx/r8/r9
+// or xmm0-3, then the stack). For icalls the signature comes from the managed method in the
+// metadata (like the Android proxy's icall adapters); other callbacks pass integers only.
+uint64_t mk_win64_call(void *fn, const uint64_t *slots, uint64_t n, uint64_t *xmm0_out);
+typedef uintptr_t U;
+U il2cpp_domain_get(void);
+U il2cpp_domain_get_assemblies(U domain, U size);
+U il2cpp_assembly_get_image(U assembly);
+U il2cpp_class_from_name(U image, U ns, U name);
+U il2cpp_class_get_nested_types(U klass, U iter);
+U il2cpp_class_get_name(U klass);
+U il2cpp_class_get_method_from_name(U klass, U name, int32_t argc);
+U il2cpp_class_get_methods(U klass, U iter);
+U il2cpp_method_get_name(U method);
+uint32_t il2cpp_method_get_flags(U method, U iflags);
+__declspec(dllexport) uint32_t il2cpp_method_get_param_count(const void *method);
+U il2cpp_method_get_param(U method, uint32_t index);
+U il2cpp_method_get_return_type(U method);
+int32_t il2cpp_type_get_type(U type);
+bool il2cpp_type_is_byref(U type);
+U il2cpp_class_from_type(U type);
+bool il2cpp_class_is_enum(U klass);
+U il2cpp_class_enum_basetype(U klass);
+
+static U find_class_path(const char *full) {  // "Ns.Outer/Inner"
+    char buf[300];
+    snprintf(buf, sizeof(buf), "%s", full);
+    char *slash = strchr(buf, '/');
+    if (slash) *slash = 0;
+    char *dot = strrchr(buf, '.');
+    const char *ns = "", *name = buf;
+    if (dot) { *dot = 0; ns = buf; name = dot + 1; }
+    size_t na = 0;
+    U *as = (U *)il2cpp_domain_get_assemblies(il2cpp_domain_get(), (U)&na);
+    U k = 0;
+    for (size_t i = 0; i < na && !k; i++) k = il2cpp_class_from_name(il2cpp_assembly_get_image(as[i]), (U)ns, (U)name);
+    while (k && slash) {
+        char *inner = slash + 1;
+        slash = strchr(inner, '/');
+        if (slash) *slash = 0;
+        U it = 0, n, found = 0;
+        while ((n = il2cpp_class_get_nested_types(k, (U)&it)))
+            if (!strcmp((const char *)il2cpp_class_get_name(n), inner)) { found = n; break; }
+        k = found;
+    }
+    return k;
+}
+// size in bytes (1, 2, 4, 8), *fp = 1 for float/double, *sig = 1 for signed; 0 = by-value struct
+static int arg_kind(U t, int *fp, int *sig) {
+    *fp = 0;
+    *sig = 0;
+    if (il2cpp_type_is_byref(t)) return 8;
+    switch (il2cpp_type_get_type(t)) {
+    case 2: case 5: return 1;                    // bool, u1
+    case 4: *sig = 1; return 1;                  // i1
+    case 3: case 7: return 2;                    // char, u2
+    case 6: *sig = 1; return 2;                  // i2
+    case 8: *sig = 1; return 4;                  // i4
+    case 9: return 4;                            // u4
+    case 0xa: case 0xb: case 0xe: case 0xf: case 0x12: case 0x14: case 0x15: case 0x18: case 0x19:
+    case 0x1b: case 0x1c: case 0x1d: return 8;  // i8, u8, string, ptr, class, array, generic, i, u, fnptr, object, szarray
+    case 0xc: *fp = 1; return 4;
+    case 0xd: *fp = 1; return 8;
+    case 0x11: {                                 // valuetype: enums only
+        U k = il2cpp_class_from_type(t);
+        if (k && il2cpp_class_is_enum(k)) return arg_kind(il2cpp_class_enum_basetype(k), fp, sig);
+        return 0;
+    }
+    default: return 0;
+    }
+}
+static icall_sig *icall_signature(const char *name) {
+    char cls[300], meth[200];
+    const char *sep = strstr(name, "::");
+    if (!sep || sep - name >= (long)sizeof(cls)) return NULL;
+    memcpy(cls, name, (size_t)(sep - name));
+    cls[sep - name] = 0;
+    snprintf(meth, sizeof(meth), "%s", sep + 2);
+    char *paren = strchr(meth, '(');
+    if (paren) *paren = 0;
+    U k = find_class_path(cls);
+    if (!k) return NULL;
+    // the overload that is the internal call (GetComponent has GetComponent<T>(), (Type), (string)...)
+    U m = 0, it = 0, cand;
+    int n_icall = 0;
+    uint32_t iflags = 0, flags = 0;
+    while ((cand = il2cpp_class_get_methods(k, (U)&it))) {
+        if (strcmp((const char *)il2cpp_method_get_name(cand), meth)) continue;
+        uint32_t ifl = 0, fl = il2cpp_method_get_flags(cand, (U)&ifl);
+        if (!(ifl & 0x1000)) continue;  // METHOD_IMPL_ATTRIBUTE_INTERNAL_CALL
+        if (!m) { m = cand; iflags = ifl; flags = fl; }
+        n_icall++;
+    }
+    if (!m) return NULL;
+    if (n_icall > 1) mk_log("icall %s: %d internal-call overloads, using the first", name, n_icall);
+    icall_sig *sg = calloc(1, sizeof(*sg));
+    int ngr = 0, nsr = 0, off = 0, fp, sig;
+    if (!(flags & 0x10)) { sg->a[sg->n].src = 0; sg->a[sg->n].idx = (uint8_t)ngr++; sg->a[sg->n].size = 8; sg->n++; }  // this
+    uint32_t pc = il2cpp_method_get_param_count((const void *)m);
+    for (uint32_t i = 0; i < pc; i++) {
+        int sz = arg_kind(il2cpp_method_get_param(m, i), &fp, &sig);
+        if (!sz || sg->n >= 24) { free(sg); return NULL; }
+        icall_arg *a = &sg->a[sg->n++];
+        a->size = (uint8_t)sz;
+        a->fp = (uint8_t)fp;
+        if (fp ? nsr < 8 : ngr < 8) { a->src = fp ? 1 : 0; a->idx = (uint8_t)(fp ? nsr++ : ngr++); continue; }
+        off = (off + sz - 1) & ~(sz - 1);
+        a->src = 2;
+        a->stack_off = (uint16_t)off;
+        off += sz;
+    }
+    int rfp, rsig, rsz = arg_kind(il2cpp_method_get_return_type(m), &rfp, &rsig);
+    sg->ret_fp = (int8_t)rfp;
+    sg->ret_size = (int8_t)(rsz ? rsz : 8);
+    sg->ret_signed = (int8_t)rsig;
+    return sg;
+}
 typedef uint64_t (*host8)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 static void call_host_cb(cpu *c, uint32_t i) {
     host_cb *h = &g_cbs[i];
+    if (!h->sig_state) {
+        h->sig_state = 1;
+        if (strstr(h->what, "::")) h->sig = icall_signature(h->what);
+        if (!h->sig && strstr(h->what, "::")) mk_log("icall %s: no signature (integer arguments only)", h->what);
+    }
     if (!h->logged) { h->logged = 1; mk_log("host callback %s (first call)", h->what); }
-    c->x[0] = ((host8)h->fn)(c->x[0], c->x[1], c->x[2], c->x[3], c->x[4], c->x[5], c->x[6], c->x[7]);
+    icall_sig *sg = h->sig;
+    if (!sg) { c->x[0] = ((host8)h->fn)(c->x[0], c->x[1], c->x[2], c->x[3], c->x[4], c->x[5], c->x[6], c->x[7]); return; }
+    uint64_t slots[24 > 4 ? 24 : 4] = { 0 }, x0f;
+    const uint8_t *gs = (const uint8_t *)(uintptr_t)c->x[31];
+    for (int k = 0; k < sg->n; k++) {
+        const icall_arg *a = &sg->a[k];
+        uint64_t v;
+        if (a->src == 0) v = c->x[a->idx];
+        else if (a->src == 1) v = c->v[a->idx].u[0];
+        else { v = 0; memcpy(&v, gs + a->stack_off, a->size); }
+        if (!a->fp && a->size < 8) v &= (1ull << (8 * a->size)) - 1;  // Windows expects nothing above
+        if (a->fp && a->size == 4) v &= 0xffffffffull;
+        slots[k] = v;
+    }
+    uint64_t r = mk_win64_call(h->fn, slots, (uint64_t)sg->n, &x0f);
+    if (sg->ret_fp) {
+        c->v[0].u[0] = sg->ret_size == 4 ? (x0f & 0xffffffffull) : x0f;
+        c->v[0].u[1] = 0;
+        return;
+    }
+    if (sg->ret_size < 8) {  // Apple callers expect the result extended to 32 bits
+        uint64_t m = (1ull << (8 * sg->ret_size)) - 1;
+        r &= m;
+        if (sg->ret_signed && (r >> (8 * sg->ret_size - 1)) & 1) r |= ~m & 0xffffffffull;
+    }
+    c->x[0] = r;
 }
 
 // ---- dispatch ----------------------------------------------------------------------------------
@@ -212,9 +366,18 @@ mk_thread *mk_thread_by_port(uint32_t port) {
 int mk_thread_count(void) { return (int)g_nthreads; }
 mk_thread *mk_thread_at(int i) { return &g_threads[i]; }
 uint64_t mk_tsd_base(void) { return (uint64_t)(uintptr_t)mk_self()->tsd; }
-static int log_escape(void *ep) {
+static const char *export_name(uint64_t addr) {
+    for (uint64_t i = 0; i < g_exports_n; i++)
+        if (IMG + g_exports[i].off == addr) return g_exports[i].name;
+    return NULL;
+}
+static int log_escape(void *ep, uint64_t target) {
     const char *n = mk_exception_type_name(ep);
-    if (n) mk_log("C++ exception %s leaves the guest (uncaught)", n);
+    if (n) {
+        const char *e = export_name(target);
+        mk_log("C++ exception %s leaves the guest (uncaught) at the entry %s (UnityFramework+%#llx)", n, e ? e : "?",
+               (unsigned long long)(target - IMG));
+    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 cpu *mk_current_cpu(void) { mk_thread *t = TlsGetValue(g_tls_self); return t ? t->cur : NULL; }
@@ -233,7 +396,7 @@ uint64_t mk_guest_enter(uint64_t target, const uint64_t *x, int nx, const double
     t->cur = &c;
     __try {
         __try { dispatch(&c, target); }
-        __except (log_escape(GetExceptionInformation())) {}
+        __except (log_escape(GetExceptionInformation(), target)) {}
     } __finally { t->cur = outer; }
     if (fret) *fret = c.v[0].d[0];
     return c.x[0];
@@ -263,8 +426,7 @@ static void *read_file(const char *name, size_t *size) {
     return buf;
 }
 
-static uint64_t g_exports_n;
-static struct { uint64_t off; char *name; } *g_exports;
+
 uint64_t mk_export(const char *name) {
     for (uint64_t i = 0; i < g_exports_n; i++)
         if (!strcmp(g_exports[i].name, name)) return IMG + g_exports[i].off;
@@ -380,10 +542,42 @@ static DWORD WINAPI watchdog(LPVOID p) {
     return 0;
 }
 
+// ---- UnityPlayer.dll patches (offsets for 2019.4.17f1 win64_nondevelopment_il2cpp; the PDB names them,
+// tools/win_sym.py finds them) -----------------------------------------------------------------------
+typedef struct { uint32_t rva; uint8_t expect[6], replace[6]; int n; const char *what; } player_patch;
+static const player_patch g_player_patches[] = {
+    // InitializeGfxDevice: a forced renderer (-force-gles30 / -force-glcore) must be in BuildSettings'
+    // graphics API list, which for the iOS build only holds Metal. `jne ok` -> `jmp ok; nop`.
+    { 0x8969c9, { 0x0f, 0x85, 0x36, 0x01, 0x00, 0x00 }, { 0xe9, 0x37, 0x01, 0x00, 0x00, 0x90 }, 6, "InitializeGfxDevice graphics API list" },
+    // TestAssetBundleCompatibility(bundle, name, error): the bundles were built for iOS/Android. Return true.
+    { 0x2d7ee0, { 0 }, { 0xb0, 0x01, 0xc3 }, 3, "TestAssetBundleCompatibility" },
+    { 0x2d7fa0, { 0 }, { 0xb0, 0x01, 0xc3 }, 3, "TestAssetBundleCompatibility (by name)" },
+    // SerializedFile::ReadMetadata<false/true>: the file's target platform must be in a bit set of
+    // desktop targets (movabs 0x2000b2a003c). Add iOS (9) and Android (13): 0x2000b2a223c.
+    { 0x8f5e1d, { 0x3c, 0x00, 0x2a, 0x0b }, { 0x3c, 0x22, 0x2a, 0x0b }, 4, "ReadMetadata<false> build targets" },
+    { 0x8f4f3a, { 0x3c, 0x00, 0x2a, 0x0b }, { 0x3c, 0x22, 0x2a, 0x0b }, 4, "ReadMetadata<true> build targets" },
+};
+static void patch_player(void) {
+    uint8_t *base = (uint8_t *)GetModuleHandleA("UnityPlayer.dll");
+    if (!base) { mk_log("UnityPlayer.dll not loaded: no patches"); return; }
+    for (size_t i = 0; i < sizeof(g_player_patches) / sizeof(g_player_patches[0]); i++) {
+        const player_patch *p = &g_player_patches[i];
+        uint8_t *at = base + p->rva;
+        if (p->expect[0] && memcmp(at, p->expect, (size_t)p->n)) { mk_log("patch %s: unexpected bytes, skipped", p->what); continue; }
+        DWORD old;
+        VirtualProtect(at, (SIZE_T)p->n, PAGE_EXECUTE_READWRITE, &old);
+        memcpy(at, p->replace, (size_t)p->n);
+        VirtualProtect(at, (SIZE_T)p->n, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), at, (SIZE_T)p->n);
+        mk_log("patched UnityPlayer: %s", p->what);
+    }
+}
+
 static int g_started;
 void mk_runtime_start(void) {
     if (g_started) return;
     g_started = 1;
+    patch_player();
     load_image();
     mk_shims_init();
     char wd[16];
@@ -412,8 +606,46 @@ void real_il2cpp_add_internal_call(uintptr_t name, uintptr_t method);
 void real_il2cpp_set_data_dir(uintptr_t path);
 int32_t real_il2cpp_init(uintptr_t domain);
 
+// The iOS build strips some methods the Windows engine still asks about (Analytics, Windows.Speech...):
+// like the Android proxy, NULL methods are answered instead of passed on.
+uint32_t real_il2cpp_method_get_param_count(uintptr_t m);
+uintptr_t real_il2cpp_runtime_invoke(uintptr_t m, uintptr_t obj, uintptr_t params, uintptr_t exc);
+uintptr_t real_il2cpp_runtime_invoke_convert_args(uintptr_t m, uintptr_t obj, uintptr_t params, int32_t n, uintptr_t exc);
+__declspec(dllexport) uint32_t il2cpp_method_get_param_count(const void *m) {
+    return m ? real_il2cpp_method_get_param_count((uintptr_t)m) : 0;
+}
+U il2cpp_method_get_class(U method);
+static void log_invoke_exception(const void *m, void **exc) {
+    if (!exc || !*exc) return;
+    static volatile LONG n;
+    if (InterlockedIncrement(&n) > 200) return;
+    U k = il2cpp_method_get_class((U)m);
+    mk_log("invoke %s::%s -> managed exception", k ? (const char *)il2cpp_class_get_name(k) : "?", (const char *)il2cpp_method_get_name((U)m));
+}
+__declspec(dllexport) void *il2cpp_runtime_invoke(const void *m, void *obj, void **params, void **exc) {
+    if (!m) { if (exc) *exc = NULL; return NULL; }
+    void *r = (void *)real_il2cpp_runtime_invoke((uintptr_t)m, (uintptr_t)obj, (uintptr_t)params, (uintptr_t)exc);
+    log_invoke_exception(m, exc);
+    return r;
+}
+__declspec(dllexport) void *il2cpp_runtime_invoke_convert_args(const void *m, void *obj, void **params, int n, void **exc) {
+    if (!m) { if (exc) *exc = NULL; return NULL; }
+    return (void *)real_il2cpp_runtime_invoke_convert_args((uintptr_t)m, (uintptr_t)obj, (uintptr_t)params, n, (uintptr_t)exc);
+}
+
+// The data is the iOS build: the game picks AssetBundles/<platform>, Rewired's platform, etc. from
+// Application.platform, so report RuntimePlatform.IPhonePlayer (8) like the original.
+static int32_t get_platform_ios(void) { return 8; }
+// Under OpenGL the Windows player cannot decode video (Media Foundation needs D3D11/12): the intro
+// video would never advance and BootstrapVideo.Update waits for time / length to reach its
+// threshold. Report a time past the end so the bootstrap carries on.
+static double video_time_ended(void *player) { (void)player; return 1e9; }
+static int gl_renderer(void) { const char *cl = GetCommandLineA(); return strstr(cl, "-force-gl") != NULL; }
+
 __declspec(dllexport) void il2cpp_add_internal_call(const char *name, void *method) {
     mk_runtime_start();
+    if (!strcmp(name, "UnityEngine.Application::get_platform")) method = (void *)get_platform_ios;
+    if (!strcmp(name, "UnityEngine.Video.VideoPlayer::get_time") && gl_renderer()) method = (void *)video_time_ended;
     real_il2cpp_add_internal_call((uintptr_t)name, (uintptr_t)mk_host_callback(method, _strdup(name)));
 }
 __declspec(dllexport) void il2cpp_set_data_dir(const char *path) {

@@ -83,3 +83,20 @@ Android 版本來就是跑 iOS 自己的 IL2CPP 執行環境（在 `__text` 裡�
 - 著色器：播放器說「shader is not supported on this GPU」——資料裡只有 Metal／GLES3 程式，要照計畫轉成 OpenGL Core 並用 `-force-glcore` 啟動。
 - 外掛（手把、存檔、Game Center 區網…）在 Windows 上要換成 host 版本。
 - GC 的執行緒掃描（host 暫存器／堆疊）與效能還沒驗證。
+
+## Windows：第一個畫面（同一天）
+
+`-force-gles30` 下，官方 Windows 播放器（NVIDIA 的 OpenGL ES 3.2 context）畫出了標題畫面的 Marble Knights 標誌與「© 2020 WayForward Technologies」。**Android 版轉好的 GLES3 著色器在 Windows 上直接能用**，暫時不需要轉 OpenGL Core；PVRTC 貼圖 Unity 自己用 CPU 解壓。
+
+這一段修掉／補上的：
+- CoreFoundation（locale、CFString、CFUUID、CFData）；未知的資料匯入每個符號只給一個位址（呼叫端比對位址）。
+- `/dev/urandom`（Windows RNG）、`lstat`、`difftime`；`Application.platform` 回報 IPhonePlayer（資料是 iOS 版，AssetBundles/ios）。
+- StreamingAssets 用 hard link 組成 iOS 的名字（813 個連結，不複製）。
+- UnityPlayer.dll 的記憶體修補（PDB 找位址，`tools/win_sym.py`）：`InitializeGfxDevice` 允許強制的渲染器、`TestAssetBundleCompatibility` 兩個多載回傳 true、`SerializedFile::ReadMetadata` 的平台集合加上 iOS／Android。
+- icall 依 metadata 的簽章轉成 Windows x64 呼叫（浮點參數、位置對應），選「internal call」的那個多載（`GameObject.GetComponent` 有好幾個）；`mk_win64_call` 有 unwind 資料，引擎丟出的託管例外能穿過它回到 guest。
+- OpenGL 下 Windows 播放器不能解碼影片：`VideoPlayer.get_time` 回報已播完，開場影片直接跳過。
+- 引擎用 NULL 方法呼叫（被 iOS 版剝掉的 Analytics 等）：照 Android 版回 0。
+
+診斷工具：`MK_TRACE_THROW=1`（每次 throw 的訊息和堆疊位址，用 llvm-symbolizer 對 PDB 解）、`il2cpp_runtime_invoke` 回傳例外時記錄方法名稱。
+
+還沒驗證：背景（Android 標題畫面是藍色格子背景，這裡是黑的）、輸入、聲音（FMOD）、存檔、效能（CPU 約一個核心）、GC 掃描。

@@ -337,11 +337,19 @@ mk_import mk_resolve_import(const char *sym, const char *lib) {
     mk_import r = { NULL, NULL };
     r = mk_cxx_lookup(sym);
     if (r.fn || r.data) return r;
+    r = mk_cf_lookup(sym);
+    if (r.fn || r.data) return r;
     for (entry *e = g_table; e->name; e++)
         if (!strcmp(e->name, sym)) { r.fn = e->fn; r.data = e->data; return r; }
     if ((r.fn = mk_sys_lookup(sym))) return r;
     if ((r.fn = mk_libcxx_lookup(sym))) return r;
-    if (looks_like_data(sym)) r.data = dummy_data(256);
+    if (looks_like_data(sym)) {  // one placeholder per symbol: callers compare addresses
+        static struct { char *name; void *p; } cache[2048];
+        static int n;
+        for (int i = 0; i < n; i++) if (!strcmp(cache[i].name, sym)) { r.data = cache[i].p; return r; }
+        r.data = dummy_data(256);
+        if (n < 2048) { cache[n].name = _strdup(sym); cache[n++].p = r.data; }
+    }
     return r;
 }
 

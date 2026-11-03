@@ -186,9 +186,21 @@ static int oflags(int f) {  // Darwin open flags -> MSVC
     if (f & 0x800) r |= _O_EXCL;
     return r;
 }
-SHIM(open) { RET(_open(S(0), oflags(I(1)), _S_IREAD | _S_IWRITE)); }  // mode is variadic (stack): ignored
-SHIM(close) { RET(_close(I(0))); }
-SHIM(read) { RET((int64_t)_read(I(0), P(1), (unsigned)X(2))); }
+#define FD_URANDOM 0x7fff0001  // /dev/urandom and /dev/random: the Windows RNG
+SHIM(open) {
+    if (!strcmp(S(0), "/dev/urandom") || !strcmp(S(0), "/dev/random")) { RET(FD_URANDOM); return; }
+    RET(_open(S(0), oflags(I(1)), _S_IREAD | _S_IWRITE));  // mode is variadic (stack): ignored
+}
+SHIM(close) { if (I(0) == FD_URANDOM) { RET(0); return; } RET(_close(I(0))); }
+SHIM(read) {
+    if (I(0) == FD_URANDOM) {
+        uint8_t *b = P(1);
+        for (size_t i = 0; i < X(2); i++) { unsigned v; rand_s(&v); b[i] = (uint8_t)v; }
+        RET(X(2));
+        return;
+    }
+    RET((int64_t)_read(I(0), P(1), (unsigned)X(2)));
+}
 SHIM(write) { RET((int64_t)_write(I(0), P(1), (unsigned)X(2))); }
 SHIM(lseek) { RET(_lseeki64(I(0), (int64_t)X(1), I(2))); }
 SHIM(pread) {
@@ -238,6 +250,8 @@ static void to_dstat(const struct _stat64 *s, dstat *d) {
     d->st_blksize = 4096;
 }
 SHIM(stat) { struct _stat64 s; int r = _stat64(S(0), &s); if (!r) to_dstat(&s, P(1)); RET(r); }
+SHIM(lstat) { struct _stat64 s; int r = _stat64(S(0), &s); if (!r) to_dstat(&s, P(1)); RET(r); }
+SHIM(difftime) { RETD((double)(int64_t)X(0) - (double)(int64_t)X(1)); }
 SHIM(fstat) { struct _stat64 s; int r = _fstat64(I(0), &s); if (!r) to_dstat(&s, P(1)); RET(r); }
 // Darwin dirent: { u64 ino, seekoff; u16 reclen, namlen; u8 type; char name[1024] }
 typedef struct { HANDLE h; int first; WIN32_FIND_DATAA fd; uint8_t ent[8 + 8 + 2 + 2 + 1 + 1024 + 3]; } ddir;
@@ -662,7 +676,7 @@ static const sys_entry g_sys[] = {
     F_(OSMemoryBarrier), F_(OSSpinLockLock), F_(OSSpinLockUnlock), F_(OSSpinLockTry), F_(os_unfair_lock_lock),
     F_(os_unfair_lock_unlock), F_(open), F_(close), F_(read), F_(write), F_(lseek), F_(pread), F_(fsync),
     F_(ftruncate), F_(fcntl), F_(flock), F_(isatty), F_(dup), F_(dup2), F_(unlink), F_(rmdir), F_(mkdir), F_(rename),
-    F_(access), F_(chmod), F_(getcwd), F_(chdir), F_(realpath), F_(stat), F_(fstat), F_(opendir), F_(readdir),
+    F_(access), F_(chmod), F_(getcwd), F_(chdir), F_(realpath), F_(stat), F_(lstat), F_(difftime), F_(fstat), F_(opendir), F_(readdir),
     F_(closedir), F_(fopen), F_(fdopen), F_(fileno), F_(fclose), F_(fread), F_(fwrite), F_(fflush), F_(fseek),
     F_(fseeko), F_(ftell), F_(ftello), F_(fgets), F_(fputs), F_(fputc), F_(fgetc), F_(puts), F_(putchar), F_(feof),
     F_(ferror), F_(clearerr), F_(rewind), F_(setvbuf), F_(vsnprintf), F_(vsprintf), F_(vfprintf), F_(vprintf),

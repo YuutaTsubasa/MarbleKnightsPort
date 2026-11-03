@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Run the Windows test build (work/win/MarbleKnights) windowed for N seconds, then close it and show
 # the logs: mk_ga.log (our GameAssembly.dll) and player.log (Unity). Our own test build only.
-# usage: tools/run_win.sh [seconds]
+# usage: [WIN_ARGS="-force-gles30 ..."] tools/run_win.sh [seconds]
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 d="$here/work/win/MarbleKnights"
 secs="${1:-20}"
 cd "$d"
 MSYS_NO_PATHCONV=1 ./MarbleKnights.exe -logFile "$(cygpath -w "$d/player.log")" -screen-fullscreen 0 \
-  -screen-width 960 -screen-height 540 &
+  -screen-width 960 -screen-height 540 ${WIN_ARGS:-} &
 pid=$!
 for _ in $(seq "$secs"); do kill -0 $pid 2>/dev/null || break; sleep 1; done
 if kill -0 $pid 2>/dev/null; then
