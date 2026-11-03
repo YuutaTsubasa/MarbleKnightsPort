@@ -180,7 +180,7 @@ static apple_controller pad_state(int slot) {
         float ky = (key(VK_UP) || key('W') ? 1.0f : 0) - (key(VK_DOWN) || key('S') ? 1.0f : 0);
         if (kx) { p.lx = kx; p.dx = kx; }
         if (ky) { p.ly = ky; p.dy = ky; }
-        p.a |= key(VK_RETURN) || key(VK_SPACE); p.b |= key(VK_ESCAPE) || key(VK_BACK);
+        p.a |= (key(VK_RETURN) && !key(VK_MENU)) || key(VK_SPACE); p.b |= key(VK_ESCAPE) || key(VK_BACK);
         p.x |= key('X'); p.y |= key('C'); p.lb |= key('Q'); p.rb |= key('E');
         p.lt |= key('1'); p.rt |= key('3'); p.options |= key(VK_TAB); p.menu |= key('P');
     }
@@ -276,6 +276,28 @@ static void dump_render(void) {
 #undef ICALL
 }
 
+// Alt+Enter / F4: switch between full screen (the monitor's size) and a 1280x720 window
+static void fullscreen_hotkey(void) {
+    static int was;
+    int now = own_window_focused() && ((key(VK_MENU) && key(VK_RETURN)) || (key(VK_F4) && !key(VK_MENU)));
+    if (now && !was) {
+        uint8_t (*is_full)(void) = (uint8_t (*)(void))mk_find_icall("UnityEngine.Screen::get_fullScreen");
+        void (*set_res)(int32_t, int32_t, int32_t, int32_t) =
+            (void (*)(int32_t, int32_t, int32_t, int32_t))mk_find_icall("UnityEngine.Screen::SetResolution");
+        if (is_full && set_res) {
+            int full = is_full() & 0xff;
+            HMONITOR mon = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi = { sizeof(mi) };
+            GetMonitorInfoA(mon, &mi);
+            int mw = mi.rcMonitor.right - mi.rcMonitor.left, mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
+            if (full) set_res(1280, 720, 3 /* Windowed */, 0);
+            else set_res(mw, mh, 1 /* FullScreenWindow */, 0);
+            mk_log("display: %s", full ? "windowed 1280x720" : "full screen");
+        }
+    }
+    was = now;
+}
+
 // main thread, from the engine's managed calls (il2cpp_runtime_invoke)
 void mk_plugins_pump(void) {
     static int busy;
@@ -283,6 +305,7 @@ void mk_plugins_pump(void) {
     busy = 1;
     if (g_ck_head) ck_pump();
     agc_pump();
+    fullscreen_hotkey();
     dump_render();
     busy = 0;
 }
