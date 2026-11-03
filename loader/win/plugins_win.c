@@ -530,7 +530,8 @@ void *mk_input_icall(const char *name, void *fn) {
 }
 
 // ---- debugging: entries of functions translated with A64TOC_TRACE (tools/a64toc.py) ----
-// Logs the first calls of each, then every power of two; x0 is `this`, x1 the first argument.
+// Logs the first calls of each, then every power of two; x0 is `this`, x1 the first argument,
+// s0-s2 the first float arguments.
 static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x18f854c, "UIJoystick.OnPointerDown" }, { 0x18f909c, "UIJoystick.OnDrag" }, { 0x18f8594, "UIJoystick.OnPointerUp" },
     { 0x18f7c80, "UIJoystick.Start" }, { 0x18f82d0, "DynamicJoystick.OnPointerDown" }, { 0x18f8cb8, "FloatingJoystick.OnPointerDown" },
@@ -551,7 +552,7 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x1d47704, "Bootstrap.BootNextItem" }, { 0x1d475cc, "Bootstrap.StartBoot" }, { 0x1d47328, "Bootstrap.SkipCurrentBoot" },
     { 0x1d47460, "Bootstrap.CheckFullSkip" }, { 0x1d477e0, "Bootstrap.CheckTapSkip" }, { 0x1d472dc, "Bootstrap.ClickSkip" },
     { 0x1d47734, "Bootstrap.CoBlendToNextBoot" }, { 0x1d63cf8, "BootstrapAppleArcade.Initialize" },
-    { 0x1d63e68, "BootstrapAppleArcade.CloseEnough" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
+    { 0x1d63e68, "BootstrapAppleArcade.CloseEnough" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
 };
 void mk_trace(uint64_t off, cpu *c) {
     static uint64_t offs[64];
@@ -564,6 +565,7 @@ void mk_trace(uint64_t off, cpu *c) {
     if (n > 5 && (n & (n - 1))) return;
     const char *name = "?";
     for (size_t i = 0; i < sizeof(g_trace_names) / sizeof(g_trace_names[0]); i++) if (g_trace_names[i].off == off) name = g_trace_names[i].name;
-    mk_log("trace %s (%#llx) call %u: x0=%#llx x1=%#llx frame %d", name, (unsigned long long)off, n,
-           (unsigned long long)X(0), (unsigned long long)X(1), g_frame_count ? g_frame_count() : -1);
+    mk_log("trace %s (%#llx) call %u: x0=%#llx x1=%#llx s0-2=%g %g %g frame %d", name, (unsigned long long)off, n,
+           (unsigned long long)X(0), (unsigned long long)X(1), c->v[0].f[0], c->v[1].f[0], c->v[2].f[0],
+           g_frame_count ? g_frame_count() : -1);
 }

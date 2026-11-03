@@ -27,6 +27,14 @@ import sys
 # (debugging; only the chunks holding them change)
 TRACE = {int(a, 16) for a in os.environ.get("A64TOC_TRACE", "").replace(" ", "").split(",") if a}
 
+# The touch controls set themselves up only when Application.platform is IPhonePlayer (the Windows
+# player answers WindowsPlayer). The whole game cannot be told iOS: the save system picks another
+# implementation for it. So the calls in these functions get the iOS answer (UnityFramework offsets):
+# iOSAttackButton.OnEnable, CustomTiltControl.Start, iOSDismountButton.Start, iOSRemoteMenuNavigation.Start,
+# iOSRemoteMenuButton.Start, iOSRemoteBackButton.Start.
+APPLICATION_GET_PLATFORM = 0x23e7b08
+IOS_PLATFORM_CALLERS = {0x1902fbc, 0x1900568, 0x1904d84, 0x1905644, 0x1905368, 0x1905070}
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from macho import MachO  # noqa: E402
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM  # noqa: E402
@@ -192,6 +200,8 @@ class Fn:
     def call(self, t):
         if t in self.stubs:
             return f"imp_{self.stubs[t]}(c);"
+        if t == APPLICATION_GET_PLATFORM and self.start in IOS_PLATFORM_CALLERS:
+            return "c->x[0] = 8; /* Application.platform: RuntimePlatform.IPhonePlayer */"
         if t in self.funcs:
             return f"c->x[30] = 0; f_{t:x}(c);"
         return f"host_call(c, IMG + {t:#x}ull);"
