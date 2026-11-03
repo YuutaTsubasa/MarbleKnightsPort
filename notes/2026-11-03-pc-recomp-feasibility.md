@@ -54,3 +54,14 @@
 - 轉換器補上向量／NEON 與其餘指令：**112,885 個函式只剩 1 個有 2 條指令沒轉（100.0%）**。隨機 3,000 個函式（10 MB 的 C）編成 x86_64 沒有錯誤。
 - **結構位移**：用 clang 的 record layout 比對 libil2cpp 的 35 個結構（`Il2CppClass`、`MethodInfo`、`Il2CppObject`、`Il2CppArray`、註冊表…）在 LP64 與 LLP64 下的位移，全部一致（唯一的差異來自測試時借用的 Android 標頭把 `uintptr_t` 定成 `unsigned long`，真正的 Windows 上是 8 bytes）。原本最大的風險之一排除。
 - **Thor 驗證工具**：`a64toc.py --batch REGEX` 產生 `work/recomp/batch.c`（轉好的函式＋每個函式一個進入 thunk＋對照表）；`loader/proxy/recomp_rt.{c,S,h}` 是執行環境：`mk_rc_enter` 把參數暫存器存進 `cpu` 結構、在真正的堆疊上給一塊 guest 堆疊（GC 掃得到）；`mk_rc_host` 用 guest 暫存器呼叫原生程式碼（複製 256 bytes 的堆疊參數）；`dispatch` 查表決定走轉換版或原生版。CMake 加 `-DMK_RECOMP_BATCH=ON` 才會把 batch 編進 proxy。第一批：遊戲自己的 `Update`／`LateUpdate`／`FixedUpdate`（275 個，沒有例外區段）已經編好，等 Thor 鎖。
+
+## 方向調整：整份 UnityFramework 都轉，不重建 libil2cpp（同一天）
+
+Android 版本來就是跑 iOS 自己的 IL2CPP 執行環境（在 `__text` 裡），外面包 Darwin 相容層。Windows 版照同一個架構，只是原生 ARM64 改成轉出來的 C：`__text` 裡的執行環境（從遊戲與 il2cpp API 走得到的約 6,800 個函式，函式指標造成的漏算另計）跟遊戲程式碼一起轉。好處：不用重建註冊表、不用逐一認出 4,444 個輔助函式；ABI 邊界只剩 il2cpp API（229 個，簽章已知）、Unity 註冊的 icall（Android 版的 icall adapter 已經有簽章）、Darwin 系統函式（Android 版的相容層要改寫成 Windows 版）。libil2cpp 原始碼當參考（結構、簽章）。
+
+## Windows 第一個里程碑（同一天）
+
+- `tools/build_win.py` 組出 `work/win/MarbleKnights/`：官方 `WindowsPlayer.exe`（改名）＋`UnityPlayer.dll`（附 PDB 符號，之後除錯、修補很有用）＋iOS 的 Data（序列化檔的平台改成 StandaloneWindows64＝19；引擎內建資源換成 Windows 版；`global-metadata.dat` 放到 `il2cpp_data/Metadata`；StreamingAssets 用 junction 連到 `work/raw-android`，不複製）。
+- `loader/win/ga_main.c`＋`tools/gen_win_stubs.py`：先做一個只會記錄的 `GameAssembly.dll`（229 個 il2cpp API 都輸出，呼叫時寫進 `mk_ga.log`、回傳 0），用 VS 2022 Build Tools＋clang-cl 編。
+- 實跑：Windows 播放器載入我們的 DLL，呼叫順序和 Android 一樣：`add_internal_call`（註冊 icall）→ `runtime_unhandled_exception_policy_set` → `set_commandline_arguments` → `set_config_dir` → `set_data_dir` → `debugger_set_agent_options` → `il2cpp_init`（stub 回 0，所以停在這裡）。
+- 下一步：Windows 版的 Mach-O 載入器與 Darwin 相容層、x64 ↔ guest 的呼叫轉接，然後把整份程式碼轉出來編進 `GameAssembly.dll`，目標是讓 `il2cpp_init` 跑完。
