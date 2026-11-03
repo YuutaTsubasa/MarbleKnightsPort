@@ -552,9 +552,37 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x1d47704, "Bootstrap.BootNextItem" }, { 0x1d475cc, "Bootstrap.StartBoot" }, { 0x1d47328, "Bootstrap.SkipCurrentBoot" },
     { 0x1d47460, "Bootstrap.CheckFullSkip" }, { 0x1d477e0, "Bootstrap.CheckTapSkip" }, { 0x1d472dc, "Bootstrap.ClickSkip" },
     { 0x1d47734, "Bootstrap.CoBlendToNextBoot" }, { 0x1d63cf8, "BootstrapAppleArcade.Initialize" },
-    { 0x1d63e68, "BootstrapAppleArcade.CloseEnough" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
+    { 0x1d63e68, "BootstrapAppleArcade.CloseEnough" }, { 0x24559bc, "ExecuteEvents.Execute" }, { 0x246b7f0, "Graphic.Raycast" },
+    { 0x1e51338, "RewiredPointerInputModule.GetTouchPointerEventData" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
 };
+// name of a UnityEngine.Object (component: its GameObject's), for the traces below
+static const char *object_name(uint64_t obj, int component, char *out, int n) {
+    static void *(*get_name)(void *), *(*get_go)(void *);
+    if (!get_name) get_name = (void *(*)(void *))mk_find_icall("UnityEngine.Object::GetName");
+    if (!get_go) get_go = (void *(*)(void *))mk_find_icall("UnityEngine.Component::get_gameObject");
+    out[0] = 0;
+    void *o = (void *)(uintptr_t)obj;
+    if (o && component && get_go) o = get_go(o);
+    if (o && get_name) managed_ascii(get_name(o), out, n);
+    return out;
+}
 void mk_trace(uint64_t off, cpu *c) {
+    // while the mouse finger is down: every event target (ExecuteEvents.Execute) and every
+    // graphic the raycaster tests (Graphic.Raycast), by name
+    if (off == 0x24559bc || off == 0x246b7f0) {
+        static unsigned logged;
+        if (!g_mtouch_active || logged >= 600) return;
+        logged++;
+        char nm[96];
+        mk_log("trace %s '%s' frame %d", off == 0x24559bc ? "ExecuteEvents.Execute on" : "Graphic.Raycast",
+               object_name(X(0), off == 0x246b7f0, nm, sizeof(nm)), g_frame_count ? g_frame_count() : -1);
+        return;
+    }
+    if ((off == 0x1e56718 || off == 0x245be48) && ((X(2) & 0xff) || (X(3) & 0xff))) {  // ProcessTouchPress(data, pressed, released)
+        mk_log("trace %s pressed=%d released=%d frame %d", off == 0x1e56718 ? "RewiredStandaloneInputModule.ProcessTouchPress" : "StandaloneInputModule.ProcessTouchPress",
+               (int)(X(2) & 0xff), (int)(X(3) & 0xff), g_frame_count ? g_frame_count() : -1);
+        return;
+    }
     static uint64_t offs[64];
     static unsigned counts[64];
     int k = 0;
@@ -565,7 +593,8 @@ void mk_trace(uint64_t off, cpu *c) {
     if (n > 5 && (n & (n - 1))) return;
     const char *name = "?";
     for (size_t i = 0; i < sizeof(g_trace_names) / sizeof(g_trace_names[0]); i++) if (g_trace_names[i].off == off) name = g_trace_names[i].name;
-    mk_log("trace %s (%#llx) call %u: x0=%#llx x1=%#llx s0-2=%g %g %g frame %d", name, (unsigned long long)off, n,
-           (unsigned long long)X(0), (unsigned long long)X(1), c->v[0].f[0], c->v[1].f[0], c->v[2].f[0],
+    mk_log("trace %s (%#llx) call %u: x0=%#llx x1=%#llx x2=%#llx x3=%#llx s0-2=%g %g %g frame %d", name, (unsigned long long)off, n,
+           (unsigned long long)X(0), (unsigned long long)X(1), (unsigned long long)X(2), (unsigned long long)X(3),
+           c->v[0].f[0], c->v[1].f[0], c->v[2].f[0],
            g_frame_count ? g_frame_count() : -1);
 }
