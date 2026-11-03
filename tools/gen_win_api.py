@@ -12,7 +12,7 @@ import re
 import sys
 
 SPECIAL = {"il2cpp_add_internal_call", "il2cpp_set_data_dir", "il2cpp_init", "il2cpp_method_get_param_count",
-           "il2cpp_runtime_invoke", "il2cpp_runtime_invoke_convert_args"}
+           "il2cpp_runtime_invoke", "il2cpp_runtime_invoke_convert_args", "il2cpp_shutdown"}
 INTS = {"int": "int32_t", "int32_t": "int32_t", "uint32_t": "uint32_t", "bool": "bool", "char": "char",
         "uint8_t": "uint8_t", "int8_t": "int8_t", "uint16_t": "uint16_t", "int16_t": "int16_t", "Il2CppChar": "uint16_t",
         "size_t": "size_t", "int64_t": "int64_t", "uint64_t": "uint64_t", "uintptr_t": "uintptr_t", "intptr_t": "intptr_t",

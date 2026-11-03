@@ -668,6 +668,15 @@ __declspec(dllexport) void il2cpp_add_internal_call(const char *name, void *meth
     method = mk_input_icall(name, method);  // plugins_win.c: the mouse as a touch
     real_il2cpp_add_internal_call((uintptr_t)name, (uintptr_t)mk_host_callback(method, _strdup(name)));
 }
+void real_il2cpp_shutdown(void);
+// The player calls this last, after the scenes are torn down and PlayerPrefs are written. The
+// runtime's own shutdown (stopping the GC and the guest threads) never returns here, so the
+// process just ends.
+__declspec(dllexport) void il2cpp_shutdown(void) {
+    mk_log("il2cpp_shutdown: ending the process");
+    TerminateProcess(GetCurrentProcess(), 0);
+    real_il2cpp_shutdown();
+}
 __declspec(dllexport) void il2cpp_set_data_dir(const char *path) {
     mk_runtime_start();
     mk_log("il2cpp_set_data_dir(%s)", path);

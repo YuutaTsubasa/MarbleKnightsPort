@@ -397,8 +397,26 @@ static void get_touch(int32_t i, touch *t) {
 }
 static uint8_t touch_supported(void) { return 1; }
 
+// The iOS game hides and locks the cursor (harmless on a touch screen); on Windows keep it usable.
+static void (*g_cursor_visible)(uint8_t);
+static void (*g_cursor_lock)(int32_t);
+static void cursor_visible(uint8_t v) { (void)v; if (g_cursor_visible) g_cursor_visible(1); }
+static void cursor_lock(int32_t m) { (void)m; if (g_cursor_lock) g_cursor_lock(0); }
+// Pads reach the game through the AppleGameController replacement. Rewired would also read them
+// from Unity's joystick input with the iOS layout (button 0 = d-pad up, so A became up + A):
+// report no joysticks to it.
+static void *(*g_joy_names)(void);
+static void *joystick_names(void) {
+    uint8_t *arr = g_joy_names ? g_joy_names() : NULL;
+    if (arr) *(uint64_t *)(arr + 0x18) = 0;  // Il2CppArray max_length: a fresh array each call
+    return arr;
+}
+
 // called for each icall the engine registers; returns the implementation to register
 void *mk_input_icall(const char *name, void *fn) {
+    if (!strcmp(name, "UnityEngine.Cursor::set_visible")) { g_cursor_visible = fn; return (void *)cursor_visible; }
+    if (!strcmp(name, "UnityEngine.Cursor::set_lockState")) { g_cursor_lock = fn; return (void *)cursor_lock; }
+    if (!strcmp(name, "UnityEngine.Input::GetJoystickNames")) { g_joy_names = fn; return (void *)joystick_names; }
     if (!strcmp(name, "UnityEngine.Input::get_touchCount")) { g_touch_count = fn; return (void *)touch_count; }
     if (!strcmp(name, "UnityEngine.Input::GetTouch_Injected")) { g_get_touch = fn; return (void *)get_touch; }
     if (!strcmp(name, "UnityEngine.Input::get_touchSupported")) return (void *)touch_supported;
