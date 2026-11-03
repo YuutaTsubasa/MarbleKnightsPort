@@ -23,6 +23,10 @@ import os
 import struct
 import sys
 
+# A64TOC_TRACE=<hex offset>,...: translated functions that call mk_trace(off, c) on entry
+# (debugging; only the chunks holding them change)
+TRACE = {int(a, 16) for a in os.environ.get("A64TOC_TRACE", "").replace(" ", "").split(",") if a}
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from macho import MachO  # noqa: E402
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM  # noqa: E402
@@ -1380,6 +1384,9 @@ class Fn:
 
     def c_source(self):
         out = list(getattr(self, "eh_decls", {}).values()) + [f"void f_{self.start:x}(cpu *c) {{"]
+        if self.start in TRACE:  # A64TOC_TRACE: log entries (the runtime's mk_trace)
+            out[-1:-1] = ["void mk_trace(uint64_t off, cpu *c);"]
+            out.append(f"    mk_trace({self.start:#x}, c);")
         for item in self.body:
             if isinstance(item, tuple):
                 if item[1] in self.labels:

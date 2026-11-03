@@ -81,7 +81,7 @@ def main():
         for name in files:
             s = os.path.join(dirpath, name)
             p = os.path.join(WORK, "patched", "Data", rel, name)  # GLES3-patched shaders etc.
-            pw = os.path.join(WORK, "win", "patched-data", rel, name)  # PVRTC decoded, videos as VP8 (tools/win_textures.py, win_videos.py)
+            pw = os.path.join(WORK, "win", "patched-data", rel, name)  # PVRTC decoded (tools/win_textures.py)
             if os.path.exists(pw):
                 p = pw
             d = os.path.join(DATA, rel, name)
