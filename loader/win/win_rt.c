@@ -102,6 +102,15 @@ typedef struct { void *fn; const char *what; int logged; int sig_state; icall_si
 static host_cb g_cbs[1 << 16];
 static volatile LONG g_ncbs;
 
+// the engine's implementation of a registered icall ("Ns.Class::Method", ignoring a "(...)" suffix)
+void *mk_find_icall(const char *name) {
+    size_t n = strlen(name);
+    for (LONG i = 0; i < g_ncbs; i++) {
+        const char *w = g_cbs[i].what;
+        if (w && !strncmp(w, name, n) && (w[n] == 0 || w[n] == '(')) return g_cbs[i].fn;
+    }
+    return NULL;
+}
 uint64_t mk_host_callback(void *fn, const char *what) {
     if (!fn) return 0;
     for (LONG i = 0; i < g_ncbs; i++)

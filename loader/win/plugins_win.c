@@ -233,6 +233,44 @@ static void agc_pump(void) {
     }
 }
 
+// MK_DUMP_RENDER=1: every few seconds log the scene's lighting and fog settings (engine icalls)
+void *mk_find_icall(const char *name);  // win_rt.c
+typedef struct { float r, g, b, a; } color4;
+static void dump_render(void) {
+    static int on = -1;
+    static ULONGLONG next;
+    if (on < 0) { char v[4]; on = GetEnvironmentVariableA("MK_DUMP_RENDER", v, sizeof(v)) > 0; }
+    if (!on || GetTickCount64() < next) return;
+    next = GetTickCount64() + 5000;
+#define ICALL(ty, name, ...) ((ty (*)(__VA_ARGS__))mk_find_icall(name))
+    int (*geti)(void);
+    float (*getf)(void);
+    void (*getc)(color4 *);
+    color4 amb = { 0 }, fogc = { 0 }, lc = { 0 };
+    int fog = (geti = ICALL(int, "UnityEngine.RenderSettings::get_fog", void)) ? geti() & 0xff : -1;
+    int fmode = (geti = ICALL(int, "UnityEngine.RenderSettings::get_fogMode", void)) ? geti() : -1;
+    float fd = (getf = ICALL(float, "UnityEngine.RenderSettings::get_fogDensity", void)) ? getf() : -1;
+    float fs = (getf = ICALL(float, "UnityEngine.RenderSettings::get_fogStartDistance", void)) ? getf() : -1;
+    float fe = (getf = ICALL(float, "UnityEngine.RenderSettings::get_fogEndDistance", void)) ? getf() : -1;
+    if ((getc = ICALL(void, "UnityEngine.RenderSettings::get_fogColor_Injected", color4 *))) getc(&fogc);
+    int amode = (geti = ICALL(int, "UnityEngine.RenderSettings::get_ambientMode", void)) ? geti() : -1;
+    float ai = (getf = ICALL(float, "UnityEngine.RenderSettings::get_ambientIntensity", void)) ? getf() : -1;
+    if ((getc = ICALL(void, "UnityEngine.RenderSettings::get_ambientLight_Injected", color4 *))) getc(&amb);
+    void *(*get_sun)(void) = ICALL(void *, "UnityEngine.RenderSettings::get_sun", void);
+    void *sun = get_sun ? get_sun() : NULL;
+    float li = -1;
+    if (sun) {
+        float (*inten)(void *) = ICALL(float, "UnityEngine.Light::get_intensity", void *);
+        void (*col)(void *, color4 *) = ICALL(void, "UnityEngine.Light::get_color_Injected", void *, color4 *);
+        if (inten) li = inten(sun);
+        if (col) col(sun, &lc);
+    }
+    mk_log("render: fog=%d mode=%d density=%g start=%g end=%g color=(%.2f %.2f %.2f) ambient mode=%d intensity=%g light=(%.2f %.2f %.2f) "
+           "sun=%p intensity=%g color=(%.2f %.2f %.2f)", fog, fmode, fd, fs, fe, fogc.r, fogc.g, fogc.b, amode, ai, amb.r, amb.g, amb.b,
+           sun, li, lc.r, lc.g, lc.b);
+#undef ICALL
+}
+
 // main thread, from the engine's managed calls (il2cpp_runtime_invoke)
 void mk_plugins_pump(void) {
     static int busy;
@@ -240,6 +278,7 @@ void mk_plugins_pump(void) {
     busy = 1;
     if (g_ck_head) ck_pump();
     agc_pump();
+    dump_render();
     busy = 0;
 }
 
