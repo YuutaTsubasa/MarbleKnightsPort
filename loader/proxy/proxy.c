@@ -289,9 +289,15 @@ extern void real_il2cpp_add_internal_call(const char *, const void *);
 
 // StreamingAssets live on external storage as plain files (3.3 GB of
 // AssetBundles + FMOD banks), so FMOD's own file I/O can open them too.
+// Shared copy that survives reinstalls (tools/install-thor.sh); falls back to the app's own folder.
+#define SHARED_DATA "/sdcard/MarbleKnights/Raw"
 static void *icall_get_streamingAssetsPath(void) {
-    char p[600];
-    snprintf(p, sizeof(p), "%s/Raw", g_external_files);
+    static char p[600];
+    if (!p[0]) {
+        if (access(SHARED_DATA "/AssetBundles/ios/ios", R_OK) == 0) snprintf(p, sizeof(p), "%s", SHARED_DATA);
+        else snprintf(p, sizeof(p), "%s/Raw", g_external_files);
+        LOG("StreamingAssets: %s", p);
+    }
     return il2cpp_string_new(p);
 }
 

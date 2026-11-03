@@ -31,10 +31,12 @@ MANIFEST = f"""<?xml version="1.0" encoding="utf-8"?>
   <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="29" />
   <uses-feature android:glEsVersion="0x00030000" />
   <uses-permission android:name="android.permission.VIBRATE" />
+  <!-- game data (3.4 GB) lives in /sdcard/MarbleKnights so it survives reinstalls; needs legacy storage -->
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
   <supports-screens android:smallScreens="true" android:normalScreens="true" android:largeScreens="true"
       android:xlargeScreens="true" android:anyDensity="true" />
   <application android:label="@string/app_name" android:icon="@mipmap/app_icon" android:extractNativeLibs="true"
-      android:isGame="true" android:hardwareAccelerated="false">
+      android:isGame="true" android:hardwareAccelerated="false" android:requestLegacyExternalStorage="true">
     <activity android:name="com.unity3d.player.UnityPlayerActivity" android:theme="@style/UnityThemeSelector"
         android:screenOrientation="sensorLandscape" android:launchMode="singleTask" android:resizeableActivity="false"
         android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale|layoutDirection|density"
