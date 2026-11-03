@@ -4,7 +4,7 @@
 # where it survives uninstall/reinstall. Existing data in the app's private folder is moved there.
 # Takes the thor lock for the device part. Game data never leaves this PC except to Thor.
 set -euo pipefail
-here="$(cd "$(dirname "$0")/.." && pwd)"
+here="$(cd "$(dirname "$0")/.." && pwd -W)"
 ops="$USERPROFILE/Data/10_Projects/tailsmachine-ops"
 cmake --build "$here/work/build-android" >/dev/null
 python -I "$here/tools/build_apk.py" | grep -E "wrote"
@@ -34,4 +34,4 @@ if ! $dev shell test -e $shared/AssetBundles/ios/ios; then
     done
   fi
 fi
-$dev shell du -sh $shared' "$(cd "$here" && pwd -W)"
+$dev shell du -sh $shared' "$here"
