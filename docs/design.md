@@ -206,26 +206,10 @@ iOS 版 FMOD（2.00.10）只會輸出到 AudioUnit／AVAudioSession。做法（`
 
 NiceVibrations 在 iOS 走 `MMVibrationManager.SelectionHaptic()` 等 extern（9 個原生函式，`0x20901c`–`0x2092ac`）。換成 `loader/proxy/haptics.c`：在主執行緒用 JNI 取得 `ActivityThread.currentApplication()` → `getSystemService("vibrator")`，播放 `VibrationEffect.createPredefined`（selection／light → TICK、medium → CLICK、heavy／failure → HEAVY_CLICK、success／warning → DOUBLE_CLICK）。Manifest 加了 `VIBRATE` 權限。驗證：除錯模式下開機時觸發一次，Thor 的震動驅動回報 `perform effect 0`。遊戲本身主要在傾斜操作（`CustomTiltControl.HandleHaptics`）時震動。
 
-## 18. Install flow (2026-11-03)
+## 18. 安裝流程（2026-11-03）
 
-- The 3.4 GB of StreamingAssets (shader-patched AssetBundles + FMOD banks) live in
-  `/sdcard/MarbleKnights/Raw`, outside the app's own folder, so uninstalling or reinstalling the APK
-  keeps them. The manifest asks for READ_EXTERNAL_STORAGE with `requestLegacyExternalStorage`
-  (targetSdk 29), and `install -g` grants it.
-- The proxy's `Application.streamingAssetsPath` icall returns that folder when
-  `AssetBundles/ios/ios` is there, otherwise `<external files>/Raw` as before.
-- `tools/install-thor.sh` does everything: build the proxy and APK, install, and if the shared folder is
-  missing, either move an existing app-folder copy (instant, same filesystem) or push from
-  `work/raw-android` + `work/patched/Raw` with the `ios` bundle names.
+3.4 GB 的 StreamingAssets（改過著色器的 AssetBundle＋FMOD bank）放在 `/sdcard/MarbleKnights/Raw`，不在 app 自己的資料夾，所以解除安裝、重裝 APK 都不會被刪。Manifest 要 `READ_EXTERNAL_STORAGE` 加 `requestLegacyExternalStorage`（targetSdk 29），`adb install -g` 直接授權。proxy 的 `Application.streamingAssetsPath` 在那裡有 `AssetBundles/ios/ios` 時回傳它，否則照舊用 `<external files>/Raw`。`tools/install-thor.sh` 一次做完：建置 proxy 與 APK、安裝；共用資料夾不存在時，若 app 資料夾已有一份就直接搬過去（同一個檔案系統，瞬間完成），否則從 `work/raw-android`＋`work/patched/Raw` 用 `ios` 的名稱推上去。Thor 上已搬好（3.8 G），遊戲從新位置正常進到標題畫面。
 
-## 19. Tilt (2026-11-03)
+## 19. 傾斜操作（2026-11-03）
 
-- `CustomTiltControl` reads Unity's `Input.gyro.attitude`; the Android player implements it with the
-  rotation-vector sensor, so no bridge is needed. Checked on Thor: enabled → unit quaternion
-  (-0.067, 0.006, -0.485, -0.872) at rest.
-- The game turns the gyro on only in a level when tilt is selected (`iOSAttackButton.Update` →
-  `ToggleTiltControl`).
-- The `MagneticHeading` plugin (iOS compass, used to keep the heading) is replaced by stubs that report
-  "no heading" (`loader/proxy/tilt.c`); the game then uses the attitude alone.
-- Not verified: the axis convention while actually tilting (iOS vs Android attitude frames) — needs
-  someone holding the device.
+`CustomTiltControl` 讀 Unity 自己的 `Input.gyro.attitude`，Android 播放器用旋轉向量感測器實作，不需要橋接。Thor 上驗證：開啟後靜置時回傳單位四元數 (-0.067, 0.006, -0.485, -0.872)。遊戲只在關卡中、且選了傾斜操作時才開陀螺儀（`iOSAttackButton.Update` → `ToggleTiltControl`）；除錯模式下 proxy 會自己打開來檢查感測器路徑。`MagneticHeading` 外掛（iOS 指南針，用來穩定方位）換成回報「沒有方位」的 stub（`loader/proxy/tilt.c`），遊戲就只用姿態。還沒驗證：實際拿著傾斜時的軸向（iOS 與 Android 的姿態座標系是否一致），需要有人手持測試。
