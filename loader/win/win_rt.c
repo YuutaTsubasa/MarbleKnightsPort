@@ -680,6 +680,7 @@ void mk_override_function(uint64_t off, void (*with)(cpu *), const char *what) {
 // FMOD: the iOS output (AudioUnit / AVAudioSession) does not exist here; start FMOD Studio with the
 // no-sound output so the game's audio calls succeed (the Android proxy does the same before
 // attaching its own output). FMOD_Studio_System_Initialize is `stp; mov; ldp; b <impl>`.
+void mk_fmod_attach_output(uint64_t core);
 static uint64_t g_fmod_init_impl, g_fmod_get_core, g_fmod_set_output;
 static void fmod_studio_initialize(cpu *c) {
     uint64_t studio = c->x[0], args[5] = { c->x[0], c->x[1], c->x[2], c->x[3], c->x[4] };
@@ -689,6 +690,7 @@ static void fmod_studio_initialize(cpu *c) {
     if (core) { uint64_t y[2] = { core, 2 /* FMOD_OUTPUTTYPE_NOSOUND */ }; r2 = mk_guest_enter(g_fmod_set_output, y, 2, NULL, 0, NULL); }
     uint64_t r = mk_guest_enter(g_fmod_init_impl, args, 5, NULL, 0, NULL);
     mk_log("FMOD Studio initialize with the no-sound output: core=%d setOutput=%d init=%d", (int)r1, (int)r2, (int)r);
+    if (!(int)r && core) mk_fmod_attach_output(core);  // fmod_win.c: the mix goes to waveOut
     c->x[0] = r;
 }
 static void patch_fmod(void) {
