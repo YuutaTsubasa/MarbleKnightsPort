@@ -125,3 +125,17 @@ iOS 版只有 arm64 機器碼，Windows x64 要嘛做 arm64 → x64 的指令轉
 - 結果（Thor）：`il2cpp_init` 在 `libunity.so` 裡回傳 1 → 讀 `globalgamemanagers` → GLES3 初始化 → `PlayerStartFirstScene` → 遊戲腳本開始跑（Apple Game Controller 管理器、AchievementTracker、「Initialized data!」、Bootstrap、AssetBundle 載入）。畫面是**全螢幕洋紅色**：Unity 的錯誤著色器，因為著色器只有 Metal 版（log：`Desired shader compiler platform 5 is not available in shader blob`）。
 
 估計更新：A 與 B 大部分已經做完。剩下最大的是 **C（著色器）**，其次是 D、E。到能玩估計再 **2.5–5 週**。
+
+## 10. 著色器：Metal → GLES3（2026-11-03）
+
+**做法（離線）**：在每個 Shader 物件加上 GLES3（shader compiler platform 9）程式，跟一般 Android 建置的資料一樣，執行期不用攔截。不選執行期攔截的原因：Unity 的 GLES 程式是**一段合併的 GLSL**（`#ifdef VERTEX … #ifdef FRAGMENT …`，放在 vertex subprogram，fragment subprogram 是空的），而 Metal 的 VS、FS 是分開建立的，執行期配不成對。
+
+- **調查**（`tools/shader_survey.py`）：151 個 Shader、1,481 段不同的 Metal 程式（421 VS、1,060 FS，8 MB MSL）。MSL 是 HLSLcc 產生的，非常規律。注意：blob 的 subprogram 表每筆 12 bytes（offset、length、segment），不是 8 bytes；調查用的是舊算法，數字偏少。
+- **轉譯器**（`tools/msl2glsl.py`）：cbuffer → 一般 uniform、`Mtl_VertexIn` → `in_<語意>`、stage 介面 → `vs_<語意>`、`SV_TargetN` → `layout(location=N) out`、`.sample/.sample_compare/.read` → `texture/textureLod/texelFetch`、型別與內建函式改名、bool 向量比較 → `lessThan()` 等。`tools/test_msl2glsl.py` 用 glslangValidator 編全部：1,447/1,481 單獨可編。
+- **blob 格式**：照 `libunity.so` 的 `LoadGpuProgramFromData` 讀出來的順序寫（記在 `tools/shader_gles.py` 檔頭）：參數表一定先有一個空名字的 cbuffer；GLES 的鬆散 uniform 放在 `$Globals`；資源表裡貼圖多一個 dim 欄位。
+- **產生**（`tools/shader_gles.py`、`tools/patch_shaders.py`）：每個 pass 把每個 Metal VS 變體配上關鍵字最接近（FS 關鍵字是 VS 的子集合、最多者）的 FS，翻成合併的 GLSL，建 blob 與 parsed form（`$Globals` 用新的 float 排列、貼圖重新編 unit、名稱補進 pass 的 `m_NameIndices`），加上平台 9。結果：1,891 個 Shader 實例、198,312 筆 GLES3 變體、225 個檔案；**5,299 段合併程式裡 5,298 段能被 glslang 編譯並連結**。沒做：GPU instancing（cbuffer 是 struct 陣列，9,222 筆）與粒子的 device buffer（1,500 筆）。
+- 工具：`unity_assets.py` 能讀寫 UnityFS／SerializedFile／type tree，原樣讀寫回去逐 byte 相同。AssetBundle 區塊旗標要用 3（LZ4HC），不能多加 0x40，否則 Unity 解壓失敗。
+- `unity default resources` 直接換成 Android 播放器內附的版本。
+- **圖形 API**：iOS 的 BuildSettings 只列 Metal，Android 播放器會退回 GLES 2.0（要 platform 5）。改成啟動參數 `-force-gles30`（編進我們的 `UnityPlayerActivity`），並在記憶體裡改 `InitializeGfxDevice` 的檢查（0x88ba00，`b.ne` → `b`），否則會出現「Unable to initialize the Unity Engine Gfx API」。
+- **Thor 上的結果**：GLES3 啟動，`Desired shader compiler platform … not available` 的錯誤全部消失，log 裡沒有任何 GLSL 編譯或連結錯誤，畫面也不再是洋紅色。但還**沒看到畫面內容**：片頭影片之後遊戲出現 NullReferenceException 就停在黑畫面。iOS 外掛（Game Center、Apple Arcade）的 ObjC 呼叫目前都被陷阱回傳 0，最可能是這裡。下一步是第 7 節的 D、E（原生外掛、系統整合），之後才能用眼睛確認著色器。
+- 片頭影片：Android 的 VideoPlayer 只能播放 bundle 裡沒壓縮的影片。`tools/repack_videos.py` 改成不壓縮重新打包，但仍然「bundle had some problem while loading」（未解決，遊戲會略過片頭）。

@@ -324,7 +324,7 @@ def rebuild_serialized(sf, replaced):
     return bytes(meta) + bytes(out_data)
 
 
-def write_bundle(path, files, unity_version="2019.4.17f1", block=0x20000):
+def write_bundle(path, files, unity_version="2019.4.17f1", block=0x20000, compress=True):
     """Write a UnityFS archive (format 7) with LZ4 blocks and an uncompressed block table."""
     stream = bytearray()
     nodes = []
@@ -334,8 +334,8 @@ def write_bundle(path, files, unity_version="2019.4.17f1", block=0x20000):
     blocks, comp = [], bytearray()
     for i in range(0, len(stream), block):
         chunk = bytes(stream[i:i + block])
-        c = lz4_compress(chunk)
-        if len(c) < len(chunk):
+        c = lz4_compress(chunk) if compress else chunk
+        if compress and len(c) < len(chunk):
             blocks.append((len(chunk), len(c), 3))
             comp += c
         else:

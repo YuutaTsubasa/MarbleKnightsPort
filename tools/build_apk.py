@@ -95,10 +95,7 @@ def main():
     src_dir = os.path.join(STAGE, "src", "com", "unity3d", "player")
     os.makedirs(src_dir)
     activity = open(os.path.join(PLAYER, "Source", "com", "unity3d", "player", "UnityPlayerActivity.java")).read()
-    activity = activity.replace("        return cmdLine;
-",
-                                '        return (cmdLine == null ? "" : cmdLine + " ") + "-force-gles30";
-', 1)
+    activity = activity.replace("return cmdLine;", 'return (cmdLine == null ? "" : cmdLine + " ") + "-force-gles30";', 1)
     open(os.path.join(src_dir, "UnityPlayerActivity.java"), "w").write(activity)
     run("javac", "-source", "8", "-target", "8", "-nowarn", "-cp", PLATFORM + os.pathsep + classes_jar, "-d", jdir,
         os.path.join(src_dir, "UnityPlayerActivity.java"))

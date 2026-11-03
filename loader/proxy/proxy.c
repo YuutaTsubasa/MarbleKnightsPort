@@ -83,6 +83,9 @@ static const code_patch g_unity_patches[] = {
     // compared with 13 (Android). Load 13 instead so iOS-built files and AssetBundles are accepted.
     { 0x6207e4, 0xb940dbe1, 0x528001a1, "ReadMetadata<false> build target" },
     { 0x621560, 0xb940dbe1, 0x528001a1, "ReadMetadata<true> build target" },
+    // InitializeGfxDevice: a forced renderer (-force-gles30) must appear in BuildSettings' graphics
+    // API list, which for the iOS build only holds Metal. `b.ne ok` -> `b ok`.
+    { 0x88ba00, 0x54000841, 0x14000042, "InitializeGfxDevice graphics API list" },
 };
 
 static int find_unity(struct dl_phdr_info *info, size_t size, void *data) {
