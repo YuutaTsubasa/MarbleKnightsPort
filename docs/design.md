@@ -187,3 +187,13 @@ iOS 版 FMOD（2.00.10）只會輸出到 AudioUnit／AVAudioSession。做法（`
 - 還沒驗證：手把（Thor 內建）、聲音實際聽起來、長時間遊玩。
 
 補充：存檔現在會保留，第二次開啟直接進主選單（Single Player／Multiplayer／Join Party），點 Single Player 進到 Player Setup。**手把還不能用**：遊戲用自己的 `AppleGameController` 外掛（Apple GCController，ObjC）讀手把，目前是空的；而且 `adb shell input gamepad` 注入的按鍵沒有真的輸入裝置，Unity 不會當成搖桿。要支援 Thor 內建手把，得把這個外掛換成 Android 版（例如用 Unity 的 `Input` 搖桿 API 實作它的原生函式），並且要拿實機手把測。
+
+## 15. 手把（2026-11-03）
+
+遊戲用自己的 `AppleGameController` 外掛讀手把（Apple GCController）：C# 每格呼叫 `GetController(i)` 拿一個 40 bytes 的結構（是否有效、左右搖桿與十字鍵 6 個 float、12 個按鍵 byte），另有連線／斷線回呼 `(bool isMicro, bool isExtended, int index)`。
+
+替代實作（`loader/proxy/gamepad.c` 與 `proxy.c` 的 `patch_agc`）：把 8 個原生函式換掉，資料來源是 **Unity 自己在 Android 上的搖桿輸入**：直接呼叫 libunity 的 icall `Input.GetAxisRaw("JoyNAxisM")`（遊戲的 InputManager 已經有 Rewired 產生的 `Joy1Axis1…` 軸）和 `Input.GetKeyInt(JoystickNButtonM)`。連線狀態每隔一段時間用 `Input.GetJoystickNames()` 比對，在主執行緒送出連線／斷線事件。glyph 名稱回傳 Apple 的 SF Symbols 名稱（遊戲找不到對應圖檔時會用通用圖示）。
+
+對應表預設照 Unity Android 的 Xbox 配置：左搖桿 軸 1/2（Y 反向）、右搖桿 3/4、十字鍵 5/6、LT/RT 軸 13/12、A/B/X/Y = 按鍵 0–3、LB/RB = 4/5、Menu = 10、Options = 11。可以用 App 外部 files 資料夾的 `gamepad.txt` 覆蓋（例如 `ry=-4 dy=6 menu=7`，負數 = 反向，-99 = 不用），不用重新打包。有 `mkdebug` 時，每個軸與按鍵的變化都會印在 logcat（`mkpad`），方便校正。
+
+結果（Thor）：遊戲偵測到 Thor 內建手把（Unity 回報的名稱是 `Xbox Wireless Controller`），log 顯示「Controller Manager Starting … Hardware: [Xbox Wireless Controller]」。用 `adb shell input gamepad` 注入的 A 鍵（會變成第二個虛擬手把）被讀成按鍵 0，主選單進入手把模式（選取框出現在 Single Player）。**實體手把的搖桿、十字鍵、肩鍵與扳機的對應還沒用實機確認**。

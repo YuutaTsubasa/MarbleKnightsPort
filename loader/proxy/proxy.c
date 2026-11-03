@@ -33,6 +33,7 @@ static void patch_image(void);
 static int g_debug;  // <external files>/mkdebug exists: trace invokes and dump watched objects
 extern const char *il2cpp_method_get_name(const void *);
 static char g_external_files[512];
+static void redirect_image_function(uintptr_t off, void *target, const char *what);
 static struct sigaction g_prev_segv, g_prev_bus, g_prev_ill, g_prev_abrt;
 
 static void log_addr(const char *what, uintptr_t a) {
@@ -167,6 +168,7 @@ __attribute__((visibility("default"))) void il2cpp_set_config_dir(const char *d)
 static void on_throw(void *obj, void *tinfo);
 static void register_ios_icalls(void);
 static void adapt_icalls(void);
+void mk_gamepad_init(const char *files_dir, int debug);
 static void *find_class_path(const char *);
 extern void *il2cpp_class_get_fields(void *, void **);
 extern const char *il2cpp_field_get_name(void *);
@@ -184,9 +186,11 @@ __attribute__((visibility("default"))) int il2cpp_init(const char *domain) {
     mk_throw_hook = on_throw;
     register_ios_icalls();
     adapt_icalls();
+    mk_gamepad_init(g_external_files, g_debug);
     if (getenv("MK_DUMP")) dump_class("GameCenter", "GameCenter");
+    if (g_debug) dump_class("AppleGameController", "AppleGameController");
     {
-        static const char *structs[] = { "CloudKit.CloudKitInterface/EventHandlers", "GameCenter.GameCenter/EventHandlers", 0 };
+        static const char *structs[] = { "AppleGameController.ControllerElements", 0 };
         for (int i = 0; structs[i]; i++) {
             void *k = find_class_path(structs[i]), *it = NULL, *f;
             if (!k) { LOG("struct %s not found", structs[i]); continue; }
@@ -230,6 +234,7 @@ extern void *real_il2cpp_runtime_invoke(const void *, void *, void **, void **);
 extern void *real_il2cpp_runtime_invoke_convert_args(const void *, void *, void **, int, void **);
 static void trace_invoke(const void *m, void **params);
 static void ck_pump(void);
+static void agc_pump(void);
 void mk_audio_pause(int paused);
 // The engine sends OnApplicationPause(bool) to every listening MonoBehaviour; follow the first one.
 extern void *il2cpp_method_get_class(const void *);
@@ -264,6 +269,7 @@ __attribute__((visibility("default"))) void *il2cpp_runtime_invoke(const void *m
         if (obj) watch_object(m, obj);
     }
     ck_pump();
+    agc_pump();
     watch_pause(m, params);
     return real_il2cpp_runtime_invoke(m, obj, params, exc);
 }
@@ -503,9 +509,11 @@ static int studio_initialize_hook(void *studio, int maxch, unsigned sflags, unsi
 
 static void patch_cloudkit(void);
 static void patch_gamecenter(void);
+static void patch_agc(void);
 static void patch_image(void) {
     patch_cloudkit();
     patch_gamecenter();
+    patch_agc();
     // FMOD_Studio_System_Initialize: stp/mov/ldp/b <impl> (UnityFramework 2.3.1)
     uintptr_t off = (uintptr_t)mk_export(&g_img, "_FMOD_Studio_System_Initialize") - (uintptr_t)g_img.base;
     uint32_t *p = (uint32_t *)(g_img.base + off);
@@ -810,7 +818,7 @@ static int invoke_int(const char *ns, const char *cls, const char *meth) {
 }
 
 static void watch_object(const void *m, void *obj) {
-    static const char *watched[] = { "BootstrapTitleScreen", "Bootstrap", 0 };
+    static const char *watched[] = { "BootstrapTitleScreen", "Bootstrap", "RuntimeManager", 0 };
     static unsigned calls;
     const char *mn = il2cpp_method_get_name(m);
     if (!mn || strcmp(mn, "Update")) return;
@@ -824,6 +832,20 @@ static void watch_object(const void *m, void *obj) {
         }
         if (!strcmp(cn, watched[i]) && (calls++ % 600) == 0) {
             LOG("watch %s (call %u): isFocused=%d", cn, calls, invoke_int("UnityEngine", "Application", "get_isFocused") & 0xff);
+            {
+                void *ik = find_class("UnityEngine", "Input");
+                const void *gm = ik ? il2cpp_class_get_method_from_name(ik, "GetJoystickNames", 0) : NULL;
+                void *exc = NULL, *arr = gm ? real_il2cpp_runtime_invoke(gm, NULL, NULL, &exc) : NULL;
+                if (arr) {
+                    size_t len = *(size_t *)((char *)arr + 0x18);
+                    for (size_t q = 0; q < len && q < 8; q++) {
+                        char sv[80];
+                        utf16_to_ascii(((void **)((char *)arr + 0x20))[q], sv, sizeof(sv));
+                        LOG("  joystick %zu: '%s'", q, sv);
+                    }
+                    if (!len) LOG("  no joysticks");
+                }
+            }
             dump_fields(obj);
         }
     }
@@ -985,4 +1007,60 @@ static void adapt_icalls(void) {
         if (stub) { real_il2cpp_add_internal_call(g_icalls[i].name, stub); made++; }
     }
     LOG("icall adapters: %u of %zu engine icalls wrapped (%u with stack arguments)", made, g_nicalls, stack);
+}
+
+// ---- AppleGameController plugin replacement (gamepad.c does the input) ----
+const void *mk_find_icall(const char *name) {
+    for (size_t i = 0; i < g_nicalls; i++)
+        if (!strcmp(g_icalls[i].name, name)) return g_icalls[i].fn;
+    return NULL;
+}
+
+typedef struct { uint8_t raw[40]; } apple_controller_raw;
+apple_controller_raw mk_gamepad_get(int pad);
+int mk_gamepad_count(void);
+const char *mk_gamepad_glyph(const char *element);
+void mk_gamepad_init(const char *files_dir, int debug);
+
+static void (*g_agc_connected)(int is_micro, int is_extended, int index);
+static void (*g_agc_disconnected)(int is_micro, int is_extended, int index);
+static int g_agc_ready, g_agc_known = 0;
+
+static void agc_initialize(void *const *handlers) {
+    g_agc_connected = (void (*)(int, int, int))handlers[0];
+    g_agc_disconnected = (void (*)(int, int, int))handlers[1];
+    g_agc_ready = 1;
+    LOG("AppleGameController(android) initialize");
+}
+static void agc_noop(void) {}
+static int agc_count(void) { return g_agc_known; }
+static const char *agc_vendor(int i) { (void)i; return strdup("Xbox Wireless Controller"); }
+static const char *agc_glyph(const char *element, int i) { (void)i; return mk_gamepad_glyph(element); }
+static apple_controller_raw agc_get(int i) { return mk_gamepad_get(i); }
+
+// main thread, from the engine's managed calls: report pads appearing / disappearing
+static void agc_pump(void) {
+    static unsigned tick;
+    if (!g_agc_ready || (tick++ % 256)) return;
+    int n = mk_gamepad_count();
+    while (g_agc_known < n) {
+        int i = g_agc_known++;
+        LOG("gamepad %d connected", i);
+        if (g_agc_connected) g_agc_connected(0, 1, i);
+    }
+    while (g_agc_known > n) {
+        int i = --g_agc_known;
+        LOG("gamepad %d disconnected", i);
+        if (g_agc_disconnected) g_agc_disconnected(0, 1, i);
+    }
+}
+
+static void patch_agc(void) {
+    static const struct { uintptr_t off; void *fn; const char *name; } fns[] = {
+        { 0x20a9b4, agc_initialize, "_AGCInitialize" }, { 0x20aa04, agc_noop, "_AGCShutdown" },
+        { 0x20aa94, agc_noop, "_AGCPrintControllerStatus" }, { 0x20aa4c, agc_noop, "_AGCAdjustControllerPluginData" },
+        { 0x20aadc, agc_count, "_AGCGetTotalNumberOfControllers" }, { 0x20ab9c, agc_vendor, "_AGCGetVendorNameForController" },
+        { 0x20ab30, agc_glyph, "_AGCGetControllerGlyph" }, { 0x20abf8, agc_get, "_AGCGetController" },
+    };
+    for (size_t i = 0; i < sizeof(fns) / sizeof(fns[0]); i++) redirect_image_function(fns[i].off, fns[i].fn, fns[i].name);
 }
