@@ -201,3 +201,7 @@ iOS 版 FMOD（2.00.10）只會輸出到 AudioUnit／AVAudioSession。做法（`
 ## 16. 手把按鈕圖示（2026-11-03）
 
 `CustomAppleController.GetGlyphSprite` 把外掛回傳的字串當成 PNG 路徑：`File.Exists` → `File.ReadAllBytes` → `ImageConversion.LoadImage` → `Sprite.Create`（iOS 上是外掛把 SF Symbol 畫成圖檔）。`tools/make_glyphs.py`（Pillow）畫 13 個 Xbox 風格的圖示（A/B/X/Y、LB/RB/LT/RT、十字鍵、左右搖桿、Menu、Options；白色加深色描邊，是我們自己畫的），建置時產生 `glyphs.inc` 編進 `libil2cpp.so`；第一次用到時寫到 `files/glyphs/<名稱>.png` 並回傳路徑。「Image Data Does not exist」的 log 已消失。測試時手把也成功在 Player Setup 指派成 P1。
+
+## 17. 震動（2026-11-03）
+
+NiceVibrations 在 iOS 走 `MMVibrationManager.SelectionHaptic()` 等 extern（9 個原生函式，`0x20901c`–`0x2092ac`）。換成 `loader/proxy/haptics.c`：在主執行緒用 JNI 取得 `ActivityThread.currentApplication()` → `getSystemService("vibrator")`，播放 `VibrationEffect.createPredefined`（selection／light → TICK、medium → CLICK、heavy／failure → HEAVY_CLICK、success／warning → DOUBLE_CLICK）。Manifest 加了 `VIBRATE` 權限。驗證：除錯模式下開機時觸發一次，Thor 的震動驅動回報 `perform effect 0`。遊戲本身主要在傾斜操作（`CustomTiltControl.HandleHaptics`）時震動。

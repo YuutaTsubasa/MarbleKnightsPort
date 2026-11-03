@@ -187,6 +187,7 @@ __attribute__((visibility("default"))) int il2cpp_init(const char *domain) {
     register_ios_icalls();
     adapt_icalls();
     mk_gamepad_init(g_external_files, g_debug);
+    if (g_debug) { void mk_haptic_test(void); mk_haptic_test(); }
     if (getenv("MK_DUMP")) dump_class("GameCenter", "GameCenter");
     if (g_debug) dump_class("AppleGameController", "AppleGameController");
     {
@@ -510,10 +511,13 @@ static int studio_initialize_hook(void *studio, int maxch, unsigned sflags, unsi
 static void patch_cloudkit(void);
 static void patch_gamecenter(void);
 static void patch_agc(void);
+typedef struct { uintptr_t off; void *fn; const char *name; } mk_native;
+extern const mk_native mk_haptic_natives[];
 static void patch_image(void) {
     patch_cloudkit();
     patch_gamecenter();
     patch_agc();
+    for (const mk_native *n = mk_haptic_natives; n->name; n++) redirect_image_function(n->off, n->fn, n->name);
     // FMOD_Studio_System_Initialize: stp/mov/ldp/b <impl> (UnityFramework 2.3.1)
     uintptr_t off = (uintptr_t)mk_export(&g_img, "_FMOD_Studio_System_Initialize") - (uintptr_t)g_img.base;
     uint32_t *p = (uint32_t *)(g_img.base + off);

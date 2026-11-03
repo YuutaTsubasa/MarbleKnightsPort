@@ -30,6 +30,7 @@ MANIFEST = f"""<?xml version="1.0" encoding="utf-8"?>
     android:versionCode="1" android:versionName="0.0.1" android:installLocation="preferExternal">
   <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="29" />
   <uses-feature android:glEsVersion="0x00030000" />
+  <uses-permission android:name="android.permission.VIBRATE" />
   <supports-screens android:smallScreens="true" android:normalScreens="true" android:largeScreens="true"
       android:xlargeScreens="true" android:anyDensity="true" />
   <application android:label="@string/app_name" android:icon="@mipmap/app_icon" android:extractNativeLibs="true"
