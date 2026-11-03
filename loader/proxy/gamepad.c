@@ -9,6 +9,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "glyphs.inc"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO, "mkpad", __VA_ARGS__)
 
@@ -45,9 +49,11 @@ static int map(const char *k) { for (int i = 0; g_map[i].key; i++) if (!strcmp(g
 #define MAX_AXES 20
 static void *g_axis_names[MAX_PADS][MAX_AXES + 1];  // pinned managed strings "JoyNAxisM"
 static int g_debug_pad;
+static char g_files_dir[512];
 
 void mk_gamepad_init(const char *files_dir, int debug) {
     g_debug_pad = debug;
+    snprintf(g_files_dir, sizeof(g_files_dir), "%s", files_dir);
     g_get_axis = (get_axis_fn)mk_find_icall("UnityEngine.Input::GetAxisRaw");
     g_get_key = (get_key_fn)mk_find_icall("UnityEngine.Input::GetKeyInt");
     g_joy_names = (joy_names_fn)mk_find_icall("UnityEngine.Input::GetJoystickNames");
@@ -136,7 +142,21 @@ const char *mk_gamepad_glyph(const char *element) {
         { "Left Shoulder", "lb.rectangle.roundedbottom" }, { "Left Trigger", "lt.rectangle.roundedtop" },
         { "Right Shoulder", "rb.rectangle.roundedbottom" }, { "Right Trigger", "rt.rectangle.roundedtop" },
         { "Direction Pad", "dpad" }, { "Left Thumbstick", "l.joystick" }, { "Right Thumbstick", "r.joystick" } };
-    for (size_t i = 0; element && i < sizeof(t) / sizeof(t[0]); i++)
-        if (!strcmp(element, t[i].e)) return strdup(t[i].g);
+    // The game loads the returned path with File.ReadAllBytes + ImageConversion.LoadImage.
+    for (size_t i = 0; element && i < sizeof(t) / sizeof(t[0]); i++) {
+        if (strcmp(element, t[i].e)) continue;
+        for (size_t k = 0; k < sizeof(g_glyph_pngs) / sizeof(g_glyph_pngs[0]); k++) {
+            if (strcmp(g_glyph_pngs[k].name, t[i].g)) continue;
+            char dir[600], path[700];
+            snprintf(dir, sizeof(dir), "%s/glyphs", g_files_dir);
+            snprintf(path, sizeof(path), "%s/%s.png", dir, t[i].g);
+            if (access(path, F_OK)) {
+                mkdir(dir, 0700);
+                FILE *f = fopen(path, "wb");
+                if (f) { fwrite(g_glyph_pngs[k].png, 1, g_glyph_pngs[k].size, f); fclose(f); }
+            }
+            return strdup(path);
+        }
+    }
     return strdup("");
 }

@@ -197,3 +197,7 @@ iOS 版 FMOD（2.00.10）只會輸出到 AudioUnit／AVAudioSession。做法（`
 對應表預設照 Unity Android 的 Xbox 配置：左搖桿 軸 1/2（Y 反向）、右搖桿 3/4、十字鍵 5/6、LT/RT 軸 13/12、A/B/X/Y = 按鍵 0–3、LB/RB = 4/5、Menu = 10、Options = 11。可以用 App 外部 files 資料夾的 `gamepad.txt` 覆蓋（例如 `ry=-4 dy=6 menu=7`，負數 = 反向，-99 = 不用），不用重新打包。有 `mkdebug` 時，每個軸與按鍵的變化都會印在 logcat（`mkpad`），方便校正。
 
 結果（Thor）：遊戲偵測到 Thor 內建手把（Unity 回報的名稱是 `Xbox Wireless Controller`），log 顯示「Controller Manager Starting … Hardware: [Xbox Wireless Controller]」。用 `adb shell input gamepad` 注入的 A 鍵（會變成第二個虛擬手把）被讀成按鍵 0，主選單進入手把模式（選取框出現在 Single Player）。**實體手把的搖桿、十字鍵、肩鍵與扳機的對應還沒用實機確認**。
+
+## 16. 手把按鈕圖示（2026-11-03）
+
+`CustomAppleController.GetGlyphSprite` 把外掛回傳的字串當成 PNG 路徑：`File.Exists` → `File.ReadAllBytes` → `ImageConversion.LoadImage` → `Sprite.Create`（iOS 上是外掛把 SF Symbol 畫成圖檔）。`tools/make_glyphs.py`（Pillow）畫 13 個 Xbox 風格的圖示（A/B/X/Y、LB/RB/LT/RT、十字鍵、左右搖桿、Menu、Options；白色加深色描邊，是我們自己畫的），建置時產生 `glyphs.inc` 編進 `libil2cpp.so`；第一次用到時寫到 `files/glyphs/<名稱>.png` 並回傳路徑。「Image Data Does not exist」的 log 已消失。測試時手把也成功在 Player Setup 指派成 P1。
