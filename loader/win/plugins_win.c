@@ -405,18 +405,107 @@ static void cursor_lock(int32_t m) { (void)m; if (g_cursor_lock) g_cursor_lock(0
 // Pads reach the game through the AppleGameController replacement. Rewired would also read them
 // from Unity's joystick input with the iOS layout (button 0 = d-pad up, so A became up + A):
 // report no joysticks to it.
+// Rewired (the iOS build) reads pads from Unity's joystick input and maps them with Unity's iOS
+// layout, so XInput pads are presented the way the iOS player reports an extended gamepad: the
+// name "[extended,wireless] joystick N by ...", A = button 14, B = 13, X = 15, Y = 12, d-pad =
+// 4-7, shoulders 8/9, triggers 10/11, pause = 0; sticks on axes 1-4 (Y down positive).
+// What Rewired reads is logged (MK_LOG_JOY=0 turns it off).
+void *il2cpp_string_new(const char *);  // win_rt.c / api_wrappers.c (U il2cpp_string_new(U))
 static void *(*g_joy_names)(void);
+static uint8_t (*g_get_key)(int32_t);
+static float (*g_axis_raw)(void *), (*g_axis)(void *);
+static int log_joy(void) { static int on = -1; if (on < 0) { char v[4] = ""; GetEnvironmentVariableA("MK_LOG_JOY", v, sizeof(v)); on = v[0] != '0'; } return on; }
+static int xi_state_of(int pad, xi_state *s) { return g_xinput_get && pad >= 0 && pad < 4 && g_xinput_get((DWORD)pad, s) == 0; }
+static int ios_button(int pad, int b) {
+    xi_state s;
+    if (!xi_state_of(pad, &s)) return 0;
+    WORD w = s.pad.buttons;
+    switch (b) {
+    case 0: return !!(w & 0x10);                 // pause <- Start
+    case 4: return !!(w & 0x1);                  // d-pad up
+    case 5: return !!(w & 0x8);                  // right
+    case 6: return !!(w & 0x2);                  // down
+    case 7: return !!(w & 0x4);                  // left
+    case 8: return !!(w & 0x100);                // L1
+    case 9: return !!(w & 0x200);                // R1
+    case 10: return s.pad.lt > 128;              // L2
+    case 11: return s.pad.rt > 128;              // R2
+    case 12: return !!(w & 0x8000);              // Y
+    case 13: return !!(w & 0x2000);              // B
+    case 14: return !!(w & 0x1000);              // A
+    case 15: return !!(w & 0x4000);              // X
+    case 16: return !!(w & 0x20);                // options <- Back (extended "options" button)
+    default: return 0;
+    }
+}
+static float ios_axis(int pad, int a) {
+    xi_state s;
+    if (!xi_state_of(pad, &s)) return 0;
+    switch (a) {
+    case 1: return stick(s.pad.lx);
+    case 2: return -stick(s.pad.ly);
+    case 3: return stick(s.pad.rx);
+    case 4: return -stick(s.pad.ry);
+    default: return 0;
+    }
+}
+static int managed_ascii(void *str, char *out, int n) {
+    uint8_t *s8 = str;
+    int len = s8 ? *(int32_t *)(s8 + 0x10) : 0, k = 0;
+    for (; k < len && k < n - 1; k++) out[k] = (char)((uint16_t *)(s8 + 0x14))[k];
+    out[k] = 0;
+    return k;
+}
 static void *joystick_names(void) {
     uint8_t *arr = g_joy_names ? g_joy_names() : NULL;
-    if (arr) *(uint64_t *)(arr + 0x18) = 0;  // Il2CppArray max_length: a fresh array each call
+    if (!arr) return arr;
+    uint64_t n = *(uint64_t *)(arr + 0x18);
+    for (uint64_t i = 0; i < n && i < 4; i++) {
+        xi_state st;
+        if (!xi_state_of((int)i, &st)) continue;
+        char name[96];
+        snprintf(name, sizeof(name), "[extended,wireless] joystick %d by Xbox Wireless Controller", (int)i + 1);
+        ((void **)(arr + 0x20))[i] = il2cpp_string_new(name);
+    }
+    static int logged;
+    if (!logged && n) { char nm[128]; managed_ascii(((void **)(arr + 0x20))[0], nm, sizeof(nm)); mk_log("joystick 0 presented as '%s'", nm); logged = 1; }
     return arr;
 }
+static uint8_t get_key(int32_t code) {
+    if (code < 330 || code >= 430) return g_get_key ? g_get_key(code) : 0;
+    int b = (code - 330) % 20, r = 0;
+    if (code < 350) { for (int p = 0; p < 4 && !r; p++) r = ios_button(p, b); }  // JoystickButtonN: any pad
+    else r = ios_button((code - 350) / 20, b);
+    if (log_joy()) {
+        static uint8_t down[430];
+        if (r != down[code]) { down[code] = (uint8_t)r; mk_log("joystick key %d (button %d) %s", code, b, r ? "down" : "up"); }
+    }
+    return (uint8_t)r;
+}
+static float joy_axis(void *name, float (*orig)(void *)) {
+    char an[64];
+    int joy, ax;
+    managed_ascii(name, an, sizeof(an));
+    if (sscanf(an, "Joy%dAxis%d", &joy, &ax) != 2) return orig ? orig(name) : 0;
+    float v = ios_axis(joy - 1, ax);
+    if (log_joy()) {
+        static int state[5][32];
+        int st = v > 0.5f ? 1 : v < -0.5f ? -1 : 0;
+        if (joy >= 1 && joy <= 4 && ax >= 0 && ax < 32 && st != state[joy][ax]) { state[joy][ax] = st; mk_log("axis %s = %.2f", an, v); }
+    }
+    return v;
+}
+static float axis_raw(void *name) { return joy_axis(name, g_axis_raw); }
+static float axis_smooth(void *name) { return joy_axis(name, g_axis); }
 
 // called for each icall the engine registers; returns the implementation to register
 void *mk_input_icall(const char *name, void *fn) {
     if (!strcmp(name, "UnityEngine.Cursor::set_visible")) { g_cursor_visible = fn; return (void *)cursor_visible; }
     if (!strcmp(name, "UnityEngine.Cursor::set_lockState")) { g_cursor_lock = fn; return (void *)cursor_lock; }
     if (!strcmp(name, "UnityEngine.Input::GetJoystickNames")) { g_joy_names = fn; return (void *)joystick_names; }
+    if (!strcmp(name, "UnityEngine.Input::GetKeyInt")) { g_get_key = fn; return (void *)get_key; }
+    if (!strcmp(name, "UnityEngine.Input::GetAxisRaw")) { g_axis_raw = fn; return (void *)axis_raw; }
+    if (!strcmp(name, "UnityEngine.Input::GetAxis")) { g_axis = fn; return (void *)axis_smooth; }
     if (!strcmp(name, "UnityEngine.Input::get_touchCount")) { g_touch_count = fn; return (void *)touch_count; }
     if (!strcmp(name, "UnityEngine.Input::GetTouch_Injected")) { g_get_touch = fn; return (void *)get_touch; }
     if (!strcmp(name, "UnityEngine.Input::get_touchSupported")) return (void *)touch_supported;
