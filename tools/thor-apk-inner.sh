@@ -24,6 +24,7 @@ for t in ${TAPS:-}; do
   "${dev[@]}" exec-out screencap -p > "$here/work/screen_${at}s.png" || true
   case "$xy" in
     key=*) "${dev[@]}" shell input -d 0 keyevent ${xy#key=}; echo "key ${xy#key=} at ${at}s" ;;
+    resume) "${dev[@]}" shell am start -n $pkg/com.unity3d.player.UnityPlayerActivity > /dev/null; echo "resume at ${at}s" ;;
     drag=*) q=${xy#drag=}; IFS=, read -r x1 y1 x2 y2 <<< "$q"; "${dev[@]}" shell input -d 0 swipe $x1 $y1 $x2 $y2 1500; echo "drag $q at ${at}s" ;;
     hold=*) p=${xy#hold=}; "${dev[@]}" shell input -d 0 swipe ${p%,*} ${p#*,} ${p%,*} ${p#*,} 400; echo "hold $p at ${at}s" ;;
     *) "${dev[@]}" shell input -d 0 tap ${xy%,*} ${xy#*,}; echo "tapped $xy at ${at}s" ;;

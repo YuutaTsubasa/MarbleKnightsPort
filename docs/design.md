@@ -174,3 +174,14 @@ iOS 版 FMOD（2.00.10）只會輸出到 AudioUnit／AVAudioSession。做法（`
 驗證：AAudio 串流啟動成功，`dumpsys media.audio_flinger` 顯示這條音軌有實際訊號（約 -13 dB，不是 -inf）。**還沒用耳朵確認**。App 切到背景時的暫停（`mk_audio_pause`）還沒接上。
 
 另外跑了 3 分多鐘的自動操作（拖曳、點 Continue）：騎士移動、吃掉大部分金幣，沒有例外、沒有當機。
+
+## 14. 修 Bug 一輪（2026-11-03，使用者在遠端）
+
+- **GPU instancing**：還不會翻的 instancing 變體（cbuffer 是 struct 陣列）與 procedural instancing（device buffer），改成把該 pass 的 `m_HasInstancingVariant`／`m_HasProceduralInstancingVariant` 設成 false（421／250 個 pass），Unity 就不會對這些物件用 instancing，改用已經翻好的一般程式。
+- **完全沒有程式的 Shader**（例如 `unity_builtin_extra` 的 `UI/Default Font`）：也補一個空的 GLES3 平台項目。`Desired shader compiler platform 9 is not available` 的錯誤因此消失。
+- **背景／前景**：攔截引擎送出的 `OnApplicationPause(bool)`，暫停或重新啟動 AAudio。按 Home 再回來，遊戲會顯示它自己的「Paused」選單，正常。
+- **除錯追蹤改成選用**：只有 App 的外部 files 資料夾裡有 `mkdebug` 檔案時才追蹤呼叫、印完整回溯（原本每次引擎呼叫都做線性搜尋，也會在第一個例外時建 10 萬筆的方法表，拖慢開機）。平常每個例外只印一行。
+- **FPS**：`FMODUnity.RuntimeManager.Update` 每格跑一次，proxy 每 10 秒印一次 FPS。Thor 上教學關卡穩定 **約 60 fps**（59.8–59.9，偶爾 57）。
+- 俄文 bundle：上一輪修好 bundle 節點旗標後已經正常。
+- 片頭影片：需要 Unity 的 `Hidden/VideoDecodeAndroid` 著色器，它只在 Android 建置的內建資源裡（播放器套件沒有），先不處理（只影響 Apple Arcade 標誌那段影片）。
+- 還沒驗證：手把（Thor 內建）、聲音實際聽起來、長時間遊玩。

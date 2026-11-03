@@ -195,7 +195,7 @@ def add_gles3(o, stats):
             parsed[i] = parse_segment(metal[i])
         return parsed[i]
 
-    segs, seg_index = [], {}
+    segs, seg_index, failed_reason = [], {}, {}
     added = 0
     for ss in o["m_ParsedForm"]["m_SubShaders"]:
         for ps in ss["m_Passes"]:
@@ -213,6 +213,7 @@ def add_gles3(o, stats):
             vss = [sp for sp in vsl if sp["m_GpuProgramType"] == METAL_VS]
             fss = [sp for sp in fsl if sp["m_GpuProgramType"] == METAL_FS]
             new_v, new_f = [], []
+            pass_failures = set()
             for v in vss:
                 vk = set(v["m_GlobalKeywordIndices"]) | {("l", x) for x in v["m_LocalKeywordIndices"]}
                 best = None
@@ -234,8 +235,10 @@ def add_gles3(o, stats):
                     except ValueError as e:  # struct params (GPU instancing) are not handled yet
                         code, bad = None, [str(e)]
                     if code is None:
-                        stats["untranslated: " + bad[0].split(":")[0]] += 1
+                        reason = bad[0].split(":")[0]
+                        stats["untranslated: " + reason] += 1
                         seg_index[key] = None
+                        failed_reason[key] = reason
                     else:
                         cb = gles_globals([c["params"] for c in vseg["cbs"]] + [c["params"] for c in fseg["cbs"]])
                         tex, units = [], {}
@@ -251,6 +254,7 @@ def add_gles3(o, stats):
                         segs.append(fblob)
                         seg_index[key] = (len(segs) - 2, len(segs) - 1, cb, tex, vseg, fseg)
                 if seg_index[key] is None:
+                    pass_failures.add(failed_reason.get(key, ""))
                     continue
                 vi, fi, cb, tex, vseg, fseg = seg_index[key]
                 req = v["m_ShaderRequirements"] | f["m_ShaderRequirements"]
@@ -283,8 +287,23 @@ def add_gles3(o, stats):
                 added += 1
             vsl.extend(new_v)
             fsl.extend(new_f)
-    if not added:
+            # Variants we cannot translate yet are GPU instancing (cbuffer struct arrays) and procedural
+            # instancing (device buffers). Telling Unity the pass has no such variant makes it draw
+            # those objects without instancing, using the translated programs.
+            if "struct params" in pass_failures and ps.get("m_HasInstancingVariant"):
+                ps["m_HasInstancingVariant"] = False
+                stats["passes: instancing disabled"] += 1
+            if "device buffer" in pass_failures and ps.get("m_HasProceduralInstancingVariant"):
+                ps["m_HasProceduralInstancingVariant"] = False
+                stats["passes: procedural instancing disabled"] += 1
+    has_programs = any(sp["m_GpuProgramType"] in (METAL_VS, METAL_FS)
+                       for ss in o["m_ParsedForm"]["m_SubShaders"] for ps in ss["m_Passes"]
+                       for st in ("progVertex", "progFragment") for sp in ps[st]["m_SubPrograms"])
+    if not added and has_programs:
+        stats["shaders without GLES3: " + o["m_ParsedForm"]["m_Name"]] += 1
         return False
+    if not added:
+        stats["shaders with no programs (empty GLES3 entry)"] += 1
     blob = write_blob(segs)
     comp = ua.lz4_compress(blob)
     o["platforms"].append(9)

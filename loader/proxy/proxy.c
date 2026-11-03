@@ -30,6 +30,8 @@ extern const char *mk_api_names[];
 
 static mk_image g_img;
 static void patch_image(void);
+static int g_debug;  // <external files>/mkdebug exists: trace invokes and dump watched objects
+extern const char *il2cpp_method_get_name(const void *);
 static char g_external_files[512];
 static struct sigaction g_prev_segv, g_prev_bus, g_prev_ill, g_prev_abrt;
 
@@ -152,6 +154,10 @@ __attribute__((visibility("default"))) void il2cpp_set_data_dir(const char *d) {
     snprintf(g_external_files, sizeof(g_external_files), "%s", d);
     char *slash = strrchr(g_external_files, '/');
     if (slash) *slash = 0;
+    char flag[600];
+    snprintf(flag, sizeof(flag), "%s/mkdebug", g_external_files);
+    g_debug = access(flag, F_OK) == 0;
+    LOG("debug tracing %s", g_debug ? "on" : "off");
     real_il2cpp_set_data_dir(d);
 }
 __attribute__((visibility("default"))) void il2cpp_set_config_dir(const char *d) {
@@ -224,12 +230,41 @@ extern void *real_il2cpp_runtime_invoke(const void *, void *, void **, void **);
 extern void *real_il2cpp_runtime_invoke_convert_args(const void *, void *, void **, int, void **);
 static void trace_invoke(const void *m, void **params);
 static void ck_pump(void);
+void mk_audio_pause(int paused);
+// The engine sends OnApplicationPause(bool) to every listening MonoBehaviour; follow the first one.
+extern void *il2cpp_method_get_class(const void *);
+extern const char *il2cpp_class_get_name(void *);
+static void watch_pause(const void *m, void **params) {
+    static int paused = -1;
+    // frame counter: FMODUnity.RuntimeManager.Update runs once per frame
+    static const void *frame_method;
+    static unsigned frames;
+    static double t_last;
+    if (m == frame_method) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        double t = ts.tv_sec + ts.tv_nsec / 1e9;
+        if (!t_last) t_last = t;
+        if (++frames, t - t_last >= 10) { LOG("fps %.1f", frames / (t - t_last)); frames = 0; t_last = t; }
+        return;
+    }
+    const char *n = il2cpp_method_get_name(m);
+    if (!frame_method && n && n[0] == 'U' && !strcmp(n, "Update") &&
+        !strcmp(il2cpp_class_get_name(il2cpp_method_get_class(m)), "RuntimeManager"))
+        frame_method = m;
+    if (!n || n[0] != 'O' || strcmp(n, "OnApplicationPause") || !params || !params[0]) return;
+    int p = *(uint8_t *)params[0] != 0;
+    if (p != paused) { paused = p; LOG("application %s", p ? "paused" : "resumed"); mk_audio_pause(p); }
+}
 static void watch_object(const void *m, void *obj);
 __attribute__((visibility("default"))) void *il2cpp_runtime_invoke(const void *m, void *obj, void **params, void **exc) {
     if (!m) { if (exc) *exc = NULL; return NULL; }
-    trace_invoke(m, params);
-    if (obj) watch_object(m, obj);
+    if (g_debug) {
+        trace_invoke(m, params);
+        if (obj) watch_object(m, obj);
+    }
     ck_pump();
+    watch_pause(m, params);
     return real_il2cpp_runtime_invoke(m, obj, params, exc);
 }
 __attribute__((visibility("default"))) void *il2cpp_runtime_invoke_convert_args(const void *m, void *obj, void **params,
@@ -420,8 +455,14 @@ static void on_throw(void *obj, void *tinfo) {
     if (count >= 300) return;
     void *ex = *(void **)obj;
     if (!ex || (uintptr_t)ex < 0x10000) return;
-    if (!g_methods) build_method_table();
     void *k = il2cpp_object_get_class(ex);
+    if (!g_debug) {  // one line per exception; full named backtraces only with mkdebug
+        char m2[200];
+        utf16_to_ascii(*(void **)((char *)ex + 0x18), m2, sizeof(m2));
+        LOG("managed throw #%d: %s.%s: %s", ++count, il2cpp_class_get_namespace(k), il2cpp_class_get_name(k), m2);
+        return;
+    }
+    if (!g_methods) build_method_table();
     char msg[200];
     utf16_to_ascii(*(void **)((char *)ex + 0x18), msg, sizeof(msg));
     LOG("managed throw #%d: %s.%s: %s", ++count, il2cpp_class_get_namespace(k), il2cpp_class_get_name(k), msg);
