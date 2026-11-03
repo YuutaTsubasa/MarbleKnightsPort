@@ -92,7 +92,7 @@ const char *mk_exception_type_name(void *exception_pointers) {
 
 #define SHIM(name) static void s_##name(cpu *c)
 #define P(i) ((void *)(uintptr_t)X(i))
-SHIM(__cxa_allocate_exception) { RET(OBJ(calloc(1, HDR + X(0)))); }
+SHIM(__cxa_allocate_exception) { uint8_t *h = calloc(1, HDR + X(0)); RET(OBJ(h)); }
 SHIM(__cxa_free_exception) { free((uint8_t *)P(0) - HDR); }
 SHIM(__cxa_throw) {
     exc_hdr *h = (exc_hdr *)((uint8_t *)P(0) - HDR);

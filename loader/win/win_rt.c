@@ -15,6 +15,8 @@
 #include <string.h>
 #include <windows.h>
 
+#include <dbghelp.h>
+
 #include "recomp_rt.h"
 #include "win_rt.h"
 
@@ -65,9 +67,19 @@ typedef struct { char *name; mk_import_fn fn; } import_slot;
 static import_slot *g_imports;
 static int g_nimports;
 
+static volatile LONG g_traced;  // MK_TRACE_IMPORTS: lines written (reset by il2cpp_init)
 void mk_imp(cpu *c, int k) {
     if (k < 0 || k >= g_nimports) mk_fatal("bad import index %d", k);
     import_slot *s = &g_imports[k];
+    static int trace = -1;
+    if (trace < 0) { char v[8]; trace = GetEnvironmentVariableA("MK_TRACE_IMPORTS", v, sizeof(v)) > 0; }
+    if (trace && InterlockedIncrement(&g_traced) < 20000) {
+        char a0[48] = "";
+        const char *p0 = (const char *)(uintptr_t)c->x[0];
+        if (c->x[0] > 0x10000 && !IsBadReadPtr(p0, 1) && p0[0] >= ' ' && p0[0] < 127) snprintf(a0, sizeof(a0), " \"%.40s\"", p0);
+        mk_log("call %s(%llx%s, %llx, %llx)", s->name, (unsigned long long)c->x[0], a0, (unsigned long long)c->x[1],
+               (unsigned long long)c->x[2]);
+    }
     if (!s->fn) {  // like the Android loader's trap stubs: log once, return 0
         static volatile LONG seen[8192];
         if (k < 8192 && !InterlockedExchange(&seen[k], 1))
@@ -331,12 +343,51 @@ static void run_initializers(void) {
     mk_log("ran %d static initializers", n);
 }
 
+// MK_WATCHDOG=<seconds>: every <seconds>, log where the first guest thread is (translated
+// function names come from GameAssembly.pdb). For finding hangs.
+static DWORD WINAPI watchdog(LPVOID p) {
+    DWORD secs = (DWORD)(uintptr_t)p;
+    HANDLE proc = GetCurrentProcess();
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+    SymInitialize(proc, NULL, TRUE);
+    for (;;) {
+        Sleep(secs * 1000);
+        mk_thread *t = g_nthreads ? &g_threads[0] : NULL;
+        if (!t || !t->handle) continue;
+        if (SuspendThread(t->handle) == (DWORD)-1) continue;
+        CONTEXT ctx = { 0 };
+        ctx.ContextFlags = CONTEXT_FULL;
+        GetThreadContext(t->handle, &ctx);
+        STACKFRAME64 sf = { 0 };
+        sf.AddrPC.Offset = ctx.Rip; sf.AddrPC.Mode = AddrModeFlat;
+        sf.AddrFrame.Offset = ctx.Rbp; sf.AddrFrame.Mode = AddrModeFlat;
+        sf.AddrStack.Offset = ctx.Rsp; sf.AddrStack.Mode = AddrModeFlat;
+        char line[4096];
+        int n = snprintf(line, sizeof(line), "watchdog: thread %u:", t->tid);
+        for (int depth = 0; depth < 24 && n < (int)sizeof(line) - 128; depth++) {
+            if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, t->handle, &sf, &ctx, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) break;
+            char buf[sizeof(SYMBOL_INFO) + 256];
+            SYMBOL_INFO *si = (SYMBOL_INFO *)buf;
+            si->SizeOfStruct = sizeof(SYMBOL_INFO);
+            si->MaxNameLen = 255;
+            DWORD64 disp = 0;
+            if (SymFromAddr(proc, sf.AddrPC.Offset, &disp, si)) n += snprintf(line + n, sizeof(line) - n, " %s+%llx", si->Name, (unsigned long long)disp);
+            else n += snprintf(line + n, sizeof(line) - n, " %llx", (unsigned long long)sf.AddrPC.Offset);
+        }
+        ResumeThread(t->handle);
+        mk_log("%s", line);
+    }
+    return 0;
+}
+
 static int g_started;
 void mk_runtime_start(void) {
     if (g_started) return;
     g_started = 1;
     load_image();
     mk_shims_init();
+    char wd[16];
+    if (GetEnvironmentVariableA("MK_WATCHDOG", wd, sizeof(wd))) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     run_initializers();
 }
 
@@ -373,6 +424,7 @@ __declspec(dllexport) void il2cpp_set_data_dir(const char *path) {
 __declspec(dllexport) int il2cpp_init(const char *domain) {
     mk_runtime_start();
     mk_log("il2cpp_init(%s)", domain);
+    g_traced = 0;
     int r = real_il2cpp_init((uintptr_t)domain);
     mk_log("il2cpp_init -> %d", r);
     return r;

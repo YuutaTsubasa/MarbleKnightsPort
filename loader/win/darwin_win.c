@@ -25,13 +25,43 @@
 #define RETD(val) do { double r_ = (val); c->v[0].u[0] = 0; c->v[0].u[1] = 0; c->v[0].d[0] = r_; } while (0)
 #define RETF(val) do { float r_ = (val); c->v[0].u[0] = 0; c->v[0].u[1] = 0; c->v[0].f[0] = r_; } while (0)
 
-// ---- memory and strings -----------------------------------------------------------------------
-SHIM(malloc) { RET(malloc(X(0) ? X(0) : 1)); }
-SHIM(calloc) { RET(calloc(X(0), X(1))); }
-SHIM(realloc) { RET(realloc(P(0), X(1))); }
-SHIM(free) { free(P(0)); }
-SHIM(posix_memalign) { void *p = _aligned_malloc(X(2), X(1)); *(void **)P(0) = p; RET(p ? 0 : ENOMEM); }
-SHIM(malloc_size) { RET(_msize(P(0))); }
+// ---- memory -------------------------------------------------------------------------------------
+// Everything the guest may free comes from this allocator: a header in front of each block keeps
+// the offset to the CRT block and the size, so aligned blocks, realloc and malloc_size all work
+// with one free().
+typedef struct { uint64_t size, offset; } mk_hdr;
+void *mk_malloc_aligned(size_t n, size_t align) {
+    if (align < 16) align = 16;
+    uint8_t *raw = malloc(n + align + sizeof(mk_hdr));
+    if (!raw) return NULL;
+    uint8_t *p = (uint8_t *)(((uintptr_t)raw + sizeof(mk_hdr) + align - 1) & ~(uintptr_t)(align - 1));
+    ((mk_hdr *)p)[-1].size = n;
+    ((mk_hdr *)p)[-1].offset = (uint64_t)(p - raw);
+    return p;
+}
+void *mk_malloc(size_t n) { return mk_malloc_aligned(n, 16); }
+void mk_free(void *p) { if (p) free((uint8_t *)p - ((mk_hdr *)p)[-1].offset); }
+size_t mk_msize(const void *p) { return p ? ((const mk_hdr *)p)[-1].size : 0; }
+void *mk_calloc(size_t a, size_t b) { void *p = mk_malloc(a * b); if (p) memset(p, 0, a * b); return p; }
+void *mk_realloc(void *p, size_t n) {
+    if (!p) return mk_malloc(n);
+    void *q = mk_malloc(n);
+    if (!q) return NULL;
+    size_t old = mk_msize(p);
+    memcpy(q, p, old < n ? old : n);
+    mk_free(p);
+    return q;
+}
+char *mk_strdup(const char *s) { size_t n = strlen(s) + 1; char *d = mk_malloc(n); memcpy(d, s, n); return d; }
+SHIM(malloc) { RET(mk_malloc(X(0))); }
+SHIM(calloc) { RET(mk_calloc(X(0), X(1))); }
+SHIM(realloc) { RET(mk_realloc(P(0), X(1))); }
+SHIM(free) { mk_free(P(0)); }
+SHIM(posix_memalign) { void *p = mk_malloc_aligned(X(2), X(1)); *(void **)P(0) = p; RET(p ? 0 : ENOMEM); }
+SHIM(malloc_size) { RET(mk_msize(P(0))); }
+SHIM(valloc) { RET(mk_malloc_aligned(X(0), 4096)); }
+SHIM(aligned_alloc) { RET(mk_malloc_aligned(X(1), X(0))); }
+// ---- strings -----------------------------------------------------------------------------------
 SHIM(memcpy) { RET(memcpy(P(0), P(1), X(2))); }
 SHIM(memmove) { RET(memmove(P(0), P(1), X(2))); }
 SHIM(memset) { RET(memset(P(0), I(1), X(2))); }
@@ -53,7 +83,7 @@ SHIM(strcat) { RET(strcat(P(0), S(1))); }
 SHIM(strchr) { RET(strchr(S(0), I(1))); }
 SHIM(strrchr) { RET(strrchr(S(0), I(1))); }
 SHIM(strstr) { RET(strstr(S(0), S(1))); }
-SHIM(strdup) { RET(_strdup(S(0))); }
+SHIM(strdup) { RET(mk_strdup(S(0))); }
 SHIM(strlcpy) {
     size_t n = strlen(S(1));
     if (X(2)) { size_t k = n < X(2) - 1 ? n : X(2) - 1; memcpy(P(0), S(1), k); ((char *)P(0))[k] = 0; }
@@ -75,14 +105,14 @@ SHIM(__stack_chk_fail) { mk_fatal("stack smashing detected in guest code"); }
 SHIM(__assert_rtn) { mk_fatal("assert %s at %s:%d (%s)", S(3), S(1), I(2), S(0)); }
 
 // ---- C++ runtime ----------------------------------------------------------------------------------
-SHIM(_Znwm) { RET(malloc(X(0) ? X(0) : 1)); }  // operator new(size_t)
-SHIM(_ZdlPv) { free(P(0)); }                   // operator delete(void *)
-SHIM(_Znam) { RET(malloc(X(0) ? X(0) : 1)); }
-SHIM(_ZdaPv) { free(P(0)); }
-SHIM(_ZnwmRKSt9nothrow_t) { RET(malloc(X(0) ? X(0) : 1)); }
-SHIM(_ZnamRKSt9nothrow_t) { RET(malloc(X(0) ? X(0) : 1)); }
-SHIM(_ZdlPvRKSt9nothrow_t) { free(P(0)); }
-SHIM(_ZdaPvRKSt9nothrow_t) { free(P(0)); }
+SHIM(_Znwm) { RET(mk_malloc(X(0))); }  // operator new(size_t)
+SHIM(_ZdlPv) { mk_free(P(0)); }        // operator delete(void *)
+SHIM(_Znam) { RET(mk_malloc(X(0))); }
+SHIM(_ZdaPv) { mk_free(P(0)); }
+SHIM(_ZnwmRKSt9nothrow_t) { RET(mk_malloc(X(0))); }
+SHIM(_ZnamRKSt9nothrow_t) { RET(mk_malloc(X(0))); }
+SHIM(_ZdlPvRKSt9nothrow_t) { mk_free(P(0)); }
+SHIM(_ZdaPvRKSt9nothrow_t) { mk_free(P(0)); }
 // static local guards: byte 0 = initialized, byte 1 = in progress (one global lock is enough)
 static CRITICAL_SECTION g_guard_mu;
 SHIM(__cxa_guard_acquire) {
@@ -149,6 +179,33 @@ SHIM(pthread_cond_timedwait_relative_np) {
 SHIM(pthread_cond_signal) { WakeConditionVariable(cond_cv(P(0))); RET(0); }
 SHIM(pthread_cond_broadcast) { WakeAllConditionVariable(cond_cv(P(0))); RET(0); }
 SHIM(pthread_cond_destroy) { RET(0); }
+// pthread_rwlock_t { long sig; char opaque[192] }: opaque[0..7] SRWLOCK *, opaque[8..11] writer thread id
+static SRWLOCK *rw_lock(void *l) {
+    volatile int64_t *sig = l;
+    SRWLOCK **slot = (SRWLOCK **)((char *)l + 8);
+    if (*sig == OUR_SIG && *slot) return *slot;
+    SRWLOCK *w = malloc(sizeof(*w));
+    InitializeSRWLock(w);
+    if (InterlockedCompareExchangePointer((void *volatile *)slot, w, NULL) != NULL) free(w);
+    *sig = OUR_SIG;
+    return *slot;
+}
+SHIM(pthread_rwlock_init) { int64_t *l = P(0); l[0] = 0; l[1] = 0; l[2] = 0; rw_lock(l); RET(0); }
+SHIM(pthread_rwlock_rdlock) { AcquireSRWLockShared(rw_lock(P(0))); RET(0); }
+SHIM(pthread_rwlock_tryrdlock) { RET(TryAcquireSRWLockShared(rw_lock(P(0))) ? 0 : EBUSY); }
+SHIM(pthread_rwlock_wrlock) { AcquireSRWLockExclusive(rw_lock(P(0))); *(volatile DWORD *)((char *)P(0) + 16) = GetCurrentThreadId(); RET(0); }
+SHIM(pthread_rwlock_trywrlock) {
+    if (!TryAcquireSRWLockExclusive(rw_lock(P(0)))) { RET(EBUSY); return; }
+    *(volatile DWORD *)((char *)P(0) + 16) = GetCurrentThreadId();
+    RET(0);
+}
+SHIM(pthread_rwlock_unlock) {
+    volatile DWORD *w = (volatile DWORD *)((char *)P(0) + 16);
+    if (*w == GetCurrentThreadId()) { *w = 0; ReleaseSRWLockExclusive(rw_lock(P(0))); }
+    else ReleaseSRWLockShared(rw_lock(P(0)));
+    RET(0);
+}
+SHIM(pthread_rwlock_destroy) { RET(0); }
 // pthread_once_t { long sig; char opaque[8] }: opaque[0] = 0 (not run), 1 (running), 2 (done)
 SHIM(pthread_once) {
     volatile LONG *st = (volatile LONG *)((char *)P(0) + 8);
@@ -242,7 +299,7 @@ typedef struct { const char *name; mk_import_fn fn; void *data; } entry;
 #define F_(n) { "_" #n, s_##n, NULL }
 #define D_(n, p) { n, NULL, (void *)(p) }
 static entry g_table[] = {
-    F_(malloc), F_(calloc), F_(realloc), F_(free), F_(posix_memalign), F_(malloc_size), F_(memcpy), F_(memmove),
+    F_(malloc), F_(calloc), F_(realloc), F_(free), F_(posix_memalign), F_(malloc_size), F_(valloc), F_(aligned_alloc), F_(memcpy), F_(memmove),
     F_(memset), F_(memcmp), F_(memchr), F_(bzero), F_(__memcpy_chk), F_(__memmove_chk), F_(__memset_chk), F_(strlen),
     F_(strnlen), F_(strcmp), F_(strncmp), F_(strcasecmp), F_(strncasecmp), F_(strcpy), F_(strncpy), F_(strcat),
     F_(strchr), F_(strrchr), F_(strstr), F_(strdup), F_(strlcpy), F_(strtol), F_(strtoul), F_(strtoull), F_(strtoll),
@@ -254,7 +311,9 @@ static entry g_table[] = {
     F_(pthread_mutexattr_init), F_(pthread_mutexattr_settype), F_(pthread_mutexattr_setprotocol),
     F_(pthread_mutexattr_destroy), F_(pthread_cond_init), F_(pthread_cond_wait), F_(pthread_cond_timedwait),
     F_(pthread_cond_timedwait_relative_np), F_(pthread_cond_signal), F_(pthread_cond_broadcast),
-    F_(pthread_cond_destroy), F_(pthread_once), F_(pthread_key_create), F_(pthread_key_delete),
+    F_(pthread_cond_destroy), F_(pthread_once), F_(pthread_rwlock_init), F_(pthread_rwlock_rdlock),
+    F_(pthread_rwlock_tryrdlock), F_(pthread_rwlock_wrlock), F_(pthread_rwlock_trywrlock), F_(pthread_rwlock_unlock),
+    F_(pthread_rwlock_destroy), F_(pthread_key_create), F_(pthread_key_delete),
     F_(pthread_getspecific), F_(pthread_setspecific), F_(pthread_self), F_(pthread_equal), F_(pthread_setname_np),
     F_(pthread_attr_init), F_(pthread_attr_destroy), F_(pthread_attr_setstacksize), F_(pthread_attr_setdetachstate),
     F_(pthread_attr_setschedpolicy), F_(pthread_attr_setschedparam), F_(sched_yield), F_(mach_absolute_time),
@@ -281,6 +340,7 @@ mk_import mk_resolve_import(const char *sym, const char *lib) {
     for (entry *e = g_table; e->name; e++)
         if (!strcmp(e->name, sym)) { r.fn = e->fn; r.data = e->data; return r; }
     if ((r.fn = mk_sys_lookup(sym))) return r;
+    if ((r.fn = mk_libcxx_lookup(sym))) return r;
     if (looks_like_data(sym)) r.data = dummy_data(256);
     return r;
 }
@@ -288,6 +348,7 @@ mk_import mk_resolve_import(const char *sym, const char *lib) {
 void mk_shims_init(void) {
     mk_sys_init();
     mk_cxx_init();
+    mk_libcxx_init();
     InitializeCriticalSection(&g_guard_mu);
     QueryPerformanceFrequency(&g_qpf);
     g_stdinp = stdin;

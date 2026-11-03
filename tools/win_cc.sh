@@ -12,5 +12,5 @@ inc=()
 IFS=';' read -ra dirs <<< "$WIN_CC_INCLUDES"
 for d in "${dirs[@]}"; do inc+=("/I$d"); done
 opt=/O1; [ -n "${WIN_CC_DEBUG:-}" ] && opt="/Od /Z7"
-"/c/Program Files/LLVM/bin/clang-cl.exe" /nologo $opt /c "${inc[@]}" -Wno-unused-label -Wno-parentheses-equality \
+"/c/Program Files/LLVM/bin/clang-cl.exe" /nologo $opt /c -mcx16 "${inc[@]}" -Wno-unused-label -Wno-parentheses-equality \
   -Wno-unused-variable -Wno-unused-function "/Fo$(cygpath -w "$obj")" "$(cygpath -w "$src")"

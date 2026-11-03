@@ -32,11 +32,11 @@ if [ "${1:-}" != "--runtime-only" ]; then
   export LOCK_SESSION="${LOCK_SESSION:-marble-knights}" LOCK_MODEL="${LOCK_MODEL:-claude-opus-5-5}"
   "$ops/tools/lock/with-lock.sh" heavy-build 20 "Marble Knights recompiled GameAssembly.dll" --     bash -c "ls '$w/gen'/chunk_*.c | xargs -P $(nproc) -n 1 bash '$here/tools/win_cc.sh' --skip-fresh '' '$w/obj'"
 fi
-cc "$w/gen/fns.c" "$w/imports.c" "$w/api_wrappers.c" "$here/loader/win/win_rt.c" "$here/loader/win/darwin_win.c" "$here/loader/win/darwin_win_sys.c" "$here/loader/win/darwin_win_cxx.c"
+cc "$w/gen/fns.c" "$w/imports.c" "$w/api_wrappers.c" "$here/loader/win/win_rt.c" "$here/loader/win/darwin_win.c" "$here/loader/win/darwin_win_sys.c" "$here/loader/win/darwin_win_cxx.c" "$here/loader/win/darwin_win_libcxx.c"
 objs=()
 for o in "$w/obj"/*.obj; do objs+=("$(cygpath -w "$o")"); done
 MSYS_NO_PATHCONV=1 "$llvm/lld-link.exe" /nologo /DLL /DEBUG "/PDB:$(cygpath -w "$w/MarbleKnights/GameAssembly.pdb")" "/OUT:$(cygpath -w "$w/GameAssembly.dll")" "${objs[@]}" \
-  kernel32.lib user32.lib libucrt.lib libvcruntime.lib libcmt.lib
+  kernel32.lib user32.lib dbghelp.lib libucrt.lib libvcruntime.lib libcmt.lib
 python -I "$here/tools/build_win.py" --gameassembly "$w/GameAssembly.dll"
 mkdir -p "$w/MarbleKnights/MarbleKnights_Data/mk"
 cp -u "$w/image/"* "$w/MarbleKnights/MarbleKnights_Data/mk/"

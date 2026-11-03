@@ -99,7 +99,7 @@ SHIM(thread_get_state) {
 }
 SHIM(task_threads) {
     int n = mk_thread_count();
-    uint32_t *a = malloc(sizeof(uint32_t) * (n ? n : 1));
+    uint32_t *a = mk_malloc(sizeof(uint32_t) * (n ? n : 1));
     for (int i = 0; i < n; i++) a[i] = mk_thread_at(i)->port;
     *(uint32_t **)P(1) = a;
     *(uint32_t *)P(2) = (uint32_t)n;
@@ -214,7 +214,7 @@ SHIM(chmod) { RET(0); }
 SHIM(getcwd) { RET(_getcwd(P(0), (int)X(1))); }
 SHIM(chdir) { RET(_chdir(S(0))); }
 SHIM(realpath) {
-    char *out = X(1) ? P(1) : malloc(1024);
+    char *out = X(1) ? P(1) : mk_malloc(1024);
     RET(_fullpath(out, S(0), 1024));
 }
 // Darwin struct stat (144 bytes)
@@ -314,7 +314,7 @@ SHIM(vprintf) { FMT(0); char b[4096]; vsnprintf(b, sizeof(b), fmt_, (va_list)P(1
 SHIM(vasprintf) {
     FMT(1);
     int n = _vscprintf(fmt_, (va_list)P(2));
-    char *b = malloc((size_t)n + 1);
+    char *b = mk_malloc((size_t)n + 1);
     vsnprintf(b, (size_t)n + 1, fmt_, (va_list)P(2));
     *(char **)P(0) = b;
     RET(n);
@@ -326,7 +326,7 @@ SHIM(printf) { FMT(0); char b[4096]; vsnprintf(b, sizeof(b), fmt_, VA(0)); mk_lo
 SHIM(asprintf) {
     FMT(1);
     int n = _vscprintf(fmt_, VA(0));
-    char *b = malloc((size_t)n + 1);
+    char *b = mk_malloc((size_t)n + 1);
     vsnprintf(b, (size_t)n + 1, fmt_, VA(0));
     *(char **)P(0) = b;
     RET(n);
@@ -349,10 +349,14 @@ SHIM(mmap) {  // (addr, len, prot, flags, fd, off)
         return;
     }
     HANDLE fh = (HANDLE)_get_osfhandle(I(4));
-    HANDLE m = CreateFileMappingA(fh, NULL, PAGE_READONLY, 0, 0, NULL);
-    if (!m) { RET(~0ull); return; }
+    HANDLE m = CreateFileMappingA(fh, NULL, (prot & 2) ? PAGE_WRITECOPY : PAGE_READONLY, 0, 0, NULL);
+    if (!m) { mk_log("mmap fd %d: CreateFileMapping failed (%lu)", I(4), GetLastError()); RET(~0ull); return; }
     uint64_t off = X(5);
-    void *p = MapViewOfFile(m, FILE_MAP_READ, (DWORD)(off >> 32), (DWORD)off, len);
+    LARGE_INTEGER fsz;
+    // POSIX maps whole pages past the end of the file; Windows views must stay inside it
+    if (GetFileSizeEx(fh, &fsz) && off + len > (uint64_t)fsz.QuadPart) len = (size_t)((uint64_t)fsz.QuadPart - off);
+    void *p = MapViewOfFile(m, (prot & 2) ? FILE_MAP_COPY : FILE_MAP_READ, (DWORD)(off >> 32), (DWORD)off, len);
+    if (!p) mk_log("mmap fd %d len %zu off %llu: MapViewOfFile failed (%lu)", I(4), len, (unsigned long long)off, GetLastError());
     CloseHandle(m);
     RET(p ? (uint64_t)(uintptr_t)p : ~0ull);
 }
@@ -568,7 +572,7 @@ SHIM(strsep) {
     if (*e) { *e = 0; *sp = e + 1; } else *sp = NULL;
     RET(s);
 }
-SHIM(strndup) { size_t n = strnlen(S(0), X(1)); char *d = malloc(n + 1); memcpy(d, S(0), n); d[n] = 0; RET(d); }
+SHIM(strndup) { size_t n = strnlen(S(0), X(1)); char *d = mk_malloc(n + 1); memcpy(d, S(0), n); d[n] = 0; RET(d); }
 SHIM(atol) { RET(_atoi64(S(0))); }
 SHIM(atof) { RETD(atof(S(0))); }
 SHIM(abs) { RET(abs(I(0))); }

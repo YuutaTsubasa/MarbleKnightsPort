@@ -513,6 +513,290 @@ class Fn:
                 raise Unsupported("ushll form")
             self.emit(f"{{ vreg _a = c->v[{m_}]; c->v[{n}].u[0] = (uint64_t)_a.w[0] << {sh}; c->v[{n}].u[1] = (uint64_t)_a.w[1] << {sh}; }}")
             return
+        return self.vec2(i, t, vreg, lane_or_vec, clear_hi)
+
+    # ---- the rest of NEON: lane-wise operations described by tables ----
+    EB = {"b": 8, "h": 16, "s": 32, "d": 64}
+    UF = {"b": "b", "h": "h", "s": "w", "d": "u"}           # unsigned lane field
+    UT = {"b": "uint8_t", "h": "uint16_t", "s": "uint32_t", "d": "uint64_t"}
+    ST_ = {"b": "int8_t", "h": "int16_t", "s": "int32_t", "d": "int64_t"}
+
+    def vec2(self, i, t, vreg, lane_or_vec, clear_hi):
+        mn = i.mnemonic
+        EB, UF, UT, ST_ = self.EB, self.UF, self.UT, self.ST_
+
+        def lanes_of(tok):
+            n, cnt, el = vreg(tok)
+            return n, cnt, el
+
+        def hi(n, cnt, el):
+            return f" c->v[{n}].u[1] = 0;" if cnt * EB[el] == 64 else ""
+
+        def mem_post(rest):
+            """memory token and post-increment (immediate or register) from the operand tail"""
+            memtok = rest[0]
+            m = re.match(r"^\[(\w+)(?:, #(-?0x[0-9a-f]+|-?\d+))?\]$", memtok)
+            if not m:
+                raise Unsupported("vmem")
+            base = self.reg_tok(m.group(1)) if m.group(1) not in ("sp",) else "c->x[31]"
+            disp = int(m.group(2), 0) if m.group(2) else 0
+            post = None
+            if len(rest) > 1:
+                post = rest[1]
+                post = str(int(post[1:], 0)) if post.startswith("#") else self.reg_tok(post)
+            breg = m.group(1)
+            return base, disp, post, breg
+
+        # scalar by element: fmul/fmla/fmls/fmulx sN, sM, vK.s[i]
+        if mn in ("fmul", "fmla", "fmls", "fmulx") and len(t) == 3 and t[0][0] in "sd" and t[0][1:].isdigit():
+            m = self.LANE_RE.match(t[2])
+            if m:
+                n, src = int(t[0][1:]), int(t[1][1:])
+                fl = "f" if t[0][0] == "s" else "d"
+                ty = "float" if fl == "f" else "double"
+                prod = f"c->v[{src}].{fl}[0] * c->v[{int(m.group(1))}].{fl}[{int(m.group(3))}]"
+                e = {"fmul": prod, "fmulx": prod, "fmla": f"c->v[{n}].{fl}[0] + {prod}", "fmls": f"c->v[{n}].{fl}[0] - {prod}"}[mn]
+                self.emit(f"{{ {ty} _r = {e}; c->v[{n}].u[0] = 0; c->v[{n}].u[1] = 0; c->v[{n}].{fl}[0] = _r; }}")
+                return
+        # single lane: ld1 {vN.s}[k], [xM] / st1 {vN.s}[k], [xM] (optionally post-indexed)
+        mm = re.match(r"^\{v(\d+)\.([bhsd])\}\[(\d+)\]$", t[0]) if t else None
+        if mn in ("ld1", "st1") and mm:
+            n, el, k = int(mm.group(1)), mm.group(2), int(mm.group(3))
+            base, disp, post, breg = mem_post(t[1:])
+            fld, ty = UF[el], UT[el]
+            op = f"c->v[{n}].{fld}[{k}] = *({ty} *)(uintptr_t)({base} + {disp});" if mn == "ld1" else f"*({ty} *)(uintptr_t)({base} + {disp}) = c->v[{n}].{fld}[{k}];"
+            if post is not None:
+                inc = EB[el] // 8 if (post.isdigit() or post.startswith("-")) else post
+                op += f" {base} += {inc};" if breg != "sp" else f" c->x[31] += {inc};"
+            self.emit("{ " + op + " }")
+            return
+        # ---- structured loads / stores: ld1..ld4 / st1..st4 with register lists ----
+        mm = re.match(r"^(ld|st)([1-4])$", mn)
+        if mm and t[0].startswith("{"):
+            kind, k = mm.group(1), int(mm.group(2))
+            regs = [x.strip() for x in t[0].strip("{}").split(",")]
+            if "[" in t[0].split("}")[-1] or any("[" in r for r in regs):
+                raise Unsupported("vlane ld/st")
+            lst = [vreg(r) for r in regs]
+            n0, cnt, el = lst[0]
+            bits = EB[el]
+            esz = bits // 8
+            base, disp, post, breg = mem_post(t[1:])
+            fld, ty = UF[el], UT[el]
+            body = [f"uint8_t *_p = (uint8_t *)(uintptr_t)({base} + {disp});"]
+            total = 0
+            if k == 1:  # consecutive registers
+                for j, (n, cn, e) in enumerate(lst):
+                    nb = cn * EB[e] // 8
+                    if kind == "ld":
+                        body.append(f"memcpy(&c->v[{n}], _p + {total}, {nb});" + (f" c->v[{n}].u[1] = 0;" if nb == 8 else ""))
+                    else:
+                        body.append(f"memcpy(_p + {total}, &c->v[{n}], {nb});")
+                    total += nb
+            else:  # interleaved: element e of register r at (e * k + r) * esz
+                if kind == "ld":
+                    body.append("vreg " + ", ".join(f"_r{r} = {{ {{ 0, 0 }} }}" for r in range(len(lst))) + ";")
+                for e in range(cnt):
+                    for r, (n, cn, ee) in enumerate(lst):
+                        off = (e * k + r) * esz
+                        if kind == "ld":
+                            body.append(f"_r{r}.{fld}[{e}] = *({ty} *)(_p + {off});")
+                        else:
+                            body.append(f"*({ty} *)(_p + {off}) = c->v[{n}].{fld}[{e}];")
+                if kind == "ld":
+                    body.append(" ".join(f"c->v[{n}] = _r{r};" for r, (n, _, _) in enumerate(lst)))
+                total = cnt * k * esz
+            if post is not None:
+                inc = total if post.isdigit() or post.startswith("-") else post
+                body.append(f"{base} += {inc};" if breg != "sp" else f"c->x[31] += {inc};")
+            self.emit("{ " + " ".join(body) + " }")
+            return
+        # ---- widening / narrowing ----
+        if mn in ("xtn", "xtn2"):
+            n, cnt, el = vreg(t[0])
+            m_, cm, em = vreg(t[1])
+            start = cm if mn == "xtn2" else 0
+            body = "".join(f"_r.{UF[el]}[{start + e}] = ({UT[el]})_a.{UF[em]}[{e}]; " for e in range(cm))
+            self.emit(f"{{ vreg _a = c->v[{m_}], _r = {'c->v[%d]' % n if mn == 'xtn2' else '{ { 0, 0 } }'}; {body}c->v[{n}] = _r; }}")
+            return
+        if mn in ("sshll", "ushll", "sshll2", "ushll2", "sxtl", "uxtl", "sxtl2", "uxtl2"):
+            n, cnt, el = vreg(t[0])
+            m_, cm, em = vreg(t[1])
+            sh = int(t[2].lstrip("#"), 0) if len(t) > 2 else 0
+            sig = mn[0] == "s"
+            start = cnt if mn.endswith("2") else 0
+            src = (lambda e: f"({ST_[el]})({ST_[em]})_a.{UF[em]}[{start + e}]") if sig else (lambda e: f"({UT[el]})_a.{UF[em]}[{start + e}]")
+            self.emit(f"{{ vreg _a = c->v[{m_}]; " + "".join(f"c->v[{n}].{UF[el]}[{e}] = ({UT[el]})({src(e)} << {sh}); " for e in range(cnt)) + "}")
+            return
+        if mn in ("umull", "smull", "umull2", "smull2", "umlal", "smlal", "umlal2", "smlal2", "umlsl", "smlsl", "umlsl2", "smlsl2"):
+            n, cnt, el = vreg(t[0])
+            a_, ca, ea = vreg(t[1])
+            bl = lane_or_vec(t[2])
+            sig = mn[0] == "s"
+            start = cnt if mn.endswith("2") else 0
+            cast = (lambda x: f"({ST_[el]})({ST_[ea]}){x}") if sig else (lambda x: f"({UT[el]}){x}")
+            bexp = (lambda e: f"_b.{UF[bl[2]]}[{bl[3]}]") if bl[0] == "lane" else (lambda e: f"_b.{UF[ea]}[{start + e}]")
+            op = "+" if "mla" in mn else "-" if "mls" in mn else None
+            body = []
+            for e in range(cnt):
+                prod = f"{cast(f'_a.{UF[ea]}[{start + e}]')} * {cast(bexp(e))}"
+                body.append(f"c->v[{n}].{UF[el]}[{e}] = ({UT[el]})({'_d.%s[%d] %s ' % (UF[el], e, op) if op else ''}{prod}); ")
+            self.emit(f"{{ vreg _a = c->v[{a_}], _b = c->v[{bl[1]}], _d = c->v[{n}]; (void)_d; " + "".join(body) + "}")
+            return
+        # ---- lane-wise ops ----
+        if len(t) >= 2 and t[0].startswith("v") and self.VEC_RE.match(t[0]):
+            n, cnt, el = vreg(t[0])
+            bits = EB[el]
+            fl = "f" if el == "s" else "d"
+            fty = "float" if el == "s" else "double"
+            fx = "f" if el == "s" else ""
+            u, ut, st = UF[el], UT[el], ST_[el]
+            ones = f"({ut})~({ut})0"
+            srcs = [lane_or_vec(x) for x in t[1:] if x.startswith("v")]
+            imm = next((x for x in t[1:] if x.startswith("#")), None)
+            ival = None
+            if imm is not None:
+                try:
+                    ival = int(imm[1:], 0)
+                except ValueError:
+                    ival = float(imm[1:])
+
+            def A(e, which=0, fp=False):
+                sv = srcs[which]
+                fld = fl if fp else u
+                if sv[0] == "lane":
+                    return f"_s{which}.{(fl if fp else UF[sv[2]])}[{sv[3]}]"
+                return f"_s{which}.{fld}[{e}]"
+            FB = {"fadd": "{a} + {b}", "fsub": "{a} - {b}", "fmul": "{a} * {b}", "fdiv": "{a} / {b}",
+                  "fmax": "fmax%s({a}, {b})" % fx, "fmin": "fmin%s({a}, {b})" % fx, "fmaxnm": "fmax%s({a}, {b})" % fx,
+                  "fminnm": "fmin%s({a}, {b})" % fx, "fabd": "fabs%s({a} - {b})" % fx,
+                  "frecps": "({t})2.0 - {a} * {b}", "frsqrts": "(({t})3.0 - {a} * {b}) / ({t})2.0", "fmulx": "{a} * {b}"}
+            FC = {"fcmeq": "==", "fcmgt": ">", "fcmge": ">=", "fcmle": "<=", "fcmlt": "<"}
+            FU = {"fneg": "-{a}", "fabs": "fabs%s({a})" % fx, "fsqrt": "sqrt%s({a})" % fx, "frecpe": "({t})1.0 / {a}",
+                  "frsqrte": "({t})1.0 / sqrt%s({a})" % fx, "frintm": "floor%s({a})" % fx, "frintp": "ceil%s({a})" % fx,
+                  "frintz": "trunc%s({a})" % fx, "frinta": "round%s({a})" % fx, "frintn": "nearbyint%s({a})" % fx,
+                  "frintx": "rint%s({a})" % fx}
+            IB = {"add": "{a} + {b}", "sub": "{a} - {b}", "mul": "{a} * {b}", "and": "{a} & {b}", "orr": "{a} | {b}",
+                  "eor": "{a} ^ {b}", "bic": "{a} & ~{b}", "umax": "{a} > {b} ? {a} : {b}", "umin": "{a} < {b} ? {a} : {b}",
+                  "smax": "({s}){a} > ({s}){b} ? {a} : {b}", "smin": "({s}){a} < ({s}){b} ? {a} : {b}",
+                  "uabd": "{a} > {b} ? {a} - {b} : {b} - {a}", "sabd": "({s}){a} > ({s}){b} ? {a} - {b} : {b} - {a}",
+                  "uqadd": "({ut})({a} + {b}) < {a} ? {ones} : ({ut})({a} + {b})", "uqsub": "{a} > {b} ? {a} - {b} : 0"}
+            IC = {"cmeq": "{a} == {b}", "cmgt": "({s}){a} > ({s}){b}", "cmge": "({s}){a} >= ({s}){b}",
+                  "cmhi": "{a} > {b}", "cmhs": "{a} >= {b}", "cmtst": "({a} & {b}) != 0", "cmle": "({s}){a} <= ({s}){b}",
+                  "cmlt": "({s}){a} < ({s}){b}"}
+            pre = "".join(f"vreg _s{j} = c->v[{sv[1]}]; " for j, sv in enumerate(srcs))
+            out = []
+            if mn in FB and len(srcs) == 2:
+                if el not in "sd":
+                    raise Unsupported("vfb el")
+                out = [f"c->v[{n}].{fl}[{e}] = " + FB[mn].format(a=A(e, 0, True), b=A(e, 1, True), t=fty) + "; " for e in range(cnt)]
+            elif mn in ("fmla", "fmls") and len(srcs) == 2:
+                op = "+" if mn == "fmla" else "-"
+                out = [f"c->v[{n}].{fl}[{e}] = c->v[{n}].{fl}[{e}] {op} {A(e, 0, True)} * {A(e, 1, True)}; " for e in range(cnt)]
+            elif mn in FC and srcs:
+                b = (lambda e: A(e, 1, True)) if len(srcs) == 2 else (lambda e: "0")
+                out = [f"c->v[{n}].{u}[{e}] = ({A(e, 0, True)} {FC[mn]} {b(e)}) ? {ones} : 0; " for e in range(cnt)]
+            elif mn in FU and len(srcs) == 1:
+                if el not in "sd":
+                    raise Unsupported("vfu el")
+                out = [f"c->v[{n}].{fl}[{e}] = " + FU[mn].format(a=A(e, 0, True), t=fty) + "; " for e in range(cnt)]
+            elif mn in ("faddp", "fmaxp", "fminp", "addp") and len(srcs) == 2:
+                half = cnt // 2
+                if mn == "addp":
+                    pair = lambda x, y: f"({ut})({x} + {y})"  # noqa: E731
+                    fld = u
+                else:
+                    if el not in "sd":
+                        raise Unsupported("vfp el")
+                    pair = {"faddp": lambda x, y: f"{x} + {y}", "fmaxp": lambda x, y: f"fmax{fx}({x}, {y})",
+                            "fminp": lambda x, y: f"fmin{fx}({x}, {y})"}[mn]
+                    fld = fl
+                for e in range(cnt):
+                    src = 0 if e < half else 1
+                    j = (e % half) * 2
+                    out.append(f"c->v[{n}].{fld}[{e}] = {pair(f'_s{src}.{fld}[{j}]', f'_s{src}.{fld}[{j + 1}]')}; ")
+            elif mn in IB and len(srcs) == 2:
+                out = [f"c->v[{n}].{u}[{e}] = ({ut})(" + IB[mn].format(a=f"({ut}){A(e, 0)}", b=f"({ut}){A(e, 1)}", s=st, ut=ut, ones=ones) + "); " for e in range(cnt)]
+            elif mn in ("mla", "mls") and len(srcs) == 2:
+                op = "+" if mn == "mla" else "-"
+                out = [f"c->v[{n}].{u}[{e}] = ({ut})(c->v[{n}].{u}[{e}] {op} {A(e, 0)} * {A(e, 1)}); " for e in range(cnt)]
+            elif mn in IC and srcs:
+                b = (lambda e: f"({ut}){A(e, 1)}") if len(srcs) == 2 else (lambda e: "0")
+                out = [f"c->v[{n}].{u}[{e}] = (" + IC[mn].format(a=f"({ut}){A(e, 0)}", b=b(e), s=st) + f") ? {ones} : 0; " for e in range(cnt)]
+            elif mn in ("ushl", "sshl") and len(srcs) == 2:
+                for e in range(cnt):
+                    sh = f"(int8_t)_s1.{u}[{e}]"
+                    val = f"(({st})_s0.{u}[{e}])" if mn == "sshl" else f"_s0.{u}[{e}]"
+                    out.append(f"{{ int _k = {sh}; c->v[{n}].{u}[{e}] = ({ut})(_k >= 0 ? (_k < {bits} ? ({ut}){val} << _k : 0) : (-_k < {bits} ? {val} >> -_k : ({'(' + val + ' < 0 ? -1 : 0)' if mn == 'sshl' else '0'}))); }} ")
+            elif mn in ("shl", "ushr", "sshr", "usra", "ssra", "sli", "sri") and len(srcs) == 1 and ival is not None:
+                k = int(ival)
+                for e in range(cnt):
+                    a = f"_s0.{u}[{e}]"
+                    if mn == "shl":
+                        r = f"({ut})({a} << {k})"
+                    elif mn in ("ushr", "usra"):
+                        r = f"({ut})({k} >= {bits} ? 0 : {a} >> {k})"
+                    elif mn in ("sshr", "ssra"):
+                        r = f"({ut})(({st}){a} >> {min(k, bits - 1)})"
+                    elif mn == "sli":
+                        r = f"({ut})(({a} << {k}) | (c->v[{n}].{u}[{e}] & ((({ut})1 << {k}) - 1)))"
+                    else:
+                        r = f"({ut})(({a} >> {k}) | (c->v[{n}].{u}[{e}] & ~(({ut})~({ut})0 >> {k})))" if k < bits else f"c->v[{n}].{u}[{e}]"
+                    if mn in ("usra", "ssra"):
+                        r = f"({ut})(c->v[{n}].{u}[{e}] + {r})"
+                    out.append(f"c->v[{n}].{u}[{e}] = {r}; ")
+            elif mn in ("neg", "abs", "not", "cnt") and len(srcs) == 1:
+                for e in range(cnt):
+                    a = f"_s0.{u}[{e}]"
+                    r = {"neg": f"({ut})-({st}){a}", "abs": f"({ut})(({st}){a} < 0 ? -({st}){a} : {a})", "not": f"({ut})~{a}",
+                         "cnt": f"({ut})__builtin_popcountll({a})"}[mn]
+                    out.append(f"c->v[{n}].{u}[{e}] = {r}; ")
+            elif mn in ("bsl", "bit", "bif") and len(srcs) == 2:
+                k = 1 if cnt * bits == 64 else 2
+                for j in range(k):
+                    d, a, b = f"c->v[{n}].u[{j}]", f"_s0.u[{j}]", f"_s1.u[{j}]"
+                    r = {"bsl": f"({d} & {a}) | (~{d} & {b})", "bit": f"({a} & {b}) | ({d} & ~{b})", "bif": f"({a} & ~{b}) | ({d} & {b})"}[mn]
+                    out.append(f"{d} = {r}; ")
+                out.append(hi(n, cnt, el))
+                self.emit("{ " + pre + "".join(out) + " }")
+                return
+            elif mn in ("trn1", "trn2") and len(srcs) == 2:
+                o = 0 if mn == "trn1" else 1
+                for e in range(cnt):
+                    src = e % 2
+                    out.append(f"c->v[{n}].{u}[{e}] = _s{src}.{u}[{(e & ~1) + o}]; ")
+            elif mn == "tbl" and len(t) == 3:
+                tab = [x.strip() for x in t[1].strip("{}").split(",")]
+                tn = [vreg(x)[0] for x in tab]
+                idx = vreg(t[2])[0]
+                tcopy = "".join(f"memcpy(_t + {16 * j}, &c->v[{q}], 16); " for j, q in enumerate(tn))
+                body = "".join(f"c->v[{n}].b[{e}] = _i.b[{e}] < {16 * len(tn)} ? _t[_i.b[{e}]] : 0; " for e in range(cnt))
+                self.emit(f"{{ uint8_t _t[64]; vreg _i = c->v[{idx}]; {tcopy}{body}}}" + hi(n, cnt, el))
+                return
+            if out:
+                self.emit("{ " + pre + "".join(out) + "}" + hi(n, cnt, el))
+                return
+        if mn == "umov" or (mn == "mov" and len(t) == 2 and t[0][0] in "wx"):
+            m = self.LANE_RE.match(t[1])
+            if m:
+                fld = UF[m.group(2)]
+                self.emit(self.setreg_tok(t[0], f"c->v[{int(m.group(1))}].{fld}[{int(m.group(3))}]"))
+                return
+        if mn in ("smov",) and len(t) == 2:
+            m = self.LANE_RE.match(t[1])
+            if m:
+                el = m.group(2)
+                self.emit(self.setreg_tok(t[0], f"(uint64_t)(int64_t)({ST_[el]})c->v[{int(m.group(1))}].{UF[el]}[{int(m.group(3))}]"))
+                return
+        if mn == "ins" and len(t) == 2:
+            a, b = lane_or_vec(t[0]), (lane_or_vec(t[1]) if t[1].startswith("v") else None)
+            if a[0] == "lane":
+                fa = f"c->v[{a[1]}].{UF[a[2]]}[{a[3]}]"
+                if b and b[0] == "lane":
+                    self.emit(f"{fa} = c->v[{b[1]}].{UF[b[2]]}[{b[3]}];")
+                else:
+                    self.emit(f"{fa} = ({UT[a[2]]}){self.reg_tok(t[1])};")
+                return
         raise Unsupported(f"v{mn}")
 
     def reg_tok(self, tok):
