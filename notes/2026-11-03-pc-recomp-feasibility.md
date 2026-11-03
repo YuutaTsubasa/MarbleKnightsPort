@@ -134,3 +134,8 @@ Rewired 會印「ControllerDataFiles is missing critical data!」，要和 Andro
 - Alt+Enter／F4：`Screen.SetResolution` 在全螢幕（螢幕大小）與 1280×720 視窗之間切換（使用者確認）。
 - AppleGameController 替代品不再把鍵盤當成永遠連著的 0 號手把（鍵盤由 Rewired 自己讀）；一直有手把可能讓遊戲停在手把模式、不接受觸控。觸控是否因此恢復待測。
 - 待查：傳送板的藍色光和地板有 Z-fighting 般的閃爍（推測：iOS 是 Metal 的浮點深度＋reversed Z，這裡是 GL 的 24-bit 深度，貼花的深度差不夠）；只在全螢幕時，第一關 Loading 前會閃一格壞掉的畫面。
+
+## Windows：開頭影片、觸控追查（11-04）
+
+- **開頭 Apple Arcade／WayForward 標誌一片黑**：這些是 VideoClip（H.264 mp4）。Windows 播放器只在 D3D11／12 下用 Media Foundation 解碼影片，這個版本跑 GLES3，Player.log 寫「Microsoft Media Foundation video decoding to texture disabled」。Unity 內建的 VP8 解碼器不挑圖形 API，所以 `tools/win_videos.py` 用 ffmpeg 把 11 段影片（9 段 Apple Arcade 各比例、WF 標誌、`Intro_Video`）轉成 VP8＋Vorbis 的 WebM（最高 1080 行），改 VideoClip 的大小、尺寸與路徑副檔名。bundle 直接改寫；`sharedassets0` 的放進 `work/win/patched-data`。實際畫面待使用者確認。
+- **觸控**：滑鼠觸控事件確實送進遊戲（log 有拖曳），但關卡裡沒有呼叫到 `RectTransformUtility.ScreenPointToLocalPointInRectangle`，表示畫面上的搖桿（`UIJoystick`）沒收到 pointer 事件。遊戲的觸控 HUD（`iOSMobileHUD`／`iOSAttackButton`）只在「傾斜／觸控控制器」被玩家使用時（`UI_ControllerWidget::IsTiltControllerUsed`，比對使用中控制器的名字）才作用；存檔是 `controlMethod: Touch`。使用者測試那次手把開遊戲時是連著的，中途才斷線，所以手把可能一直佔著玩家。下一步：手把關掉再開遊戲測；仍不行就在關卡裡記錄使用中的控制器。
