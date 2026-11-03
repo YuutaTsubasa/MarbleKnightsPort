@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shader_gles as sg  # noqa: E402
 import unity_assets as ua  # noqa: E402
+import video_decode_android  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "work", "ipa", "Payload", "reprovisioned.app", "Data")
@@ -92,6 +93,9 @@ def main():
         if nd:
             open(os.path.join(OUT, "Data", name), "wb").write(nd)
             changed.append("Data/" + name.replace("\\", "/"))
+    if not only or only in "Resources/unity_builtin_extra":
+        video_decode_android.main(tree)
+        changed.append("Data/globalgamemanagers")
     shutil.copy(ANDROID_DEFAULT_RES, os.path.join(OUT, "Data", "unity default resources"))
     changed.append("Data/unity default resources")
     for dp, _, fs in os.walk(os.path.join(RAW, "AssetBundles")):

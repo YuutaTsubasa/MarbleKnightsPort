@@ -213,3 +213,11 @@ NiceVibrations 在 iOS 走 `MMVibrationManager.SelectionHaptic()` 等 extern（9
 ## 19. 傾斜操作（2026-11-03）
 
 `CustomTiltControl` 讀 Unity 自己的 `Input.gyro.attitude`，Android 播放器用旋轉向量感測器實作，不需要橋接。Thor 上驗證：開啟後靜置時回傳單位四元數 (-0.067, 0.006, -0.485, -0.872)。遊戲只在關卡中、且選了傾斜操作時才開陀螺儀（`iOSAttackButton.Update` → `ToggleTiltControl`）；除錯模式下 proxy 會自己打開來檢查感測器路徑。`MagneticHeading` 外掛（iOS 指南針，用來穩定方位）換成回報「沒有方位」的 stub（`loader/proxy/tilt.c`），遊戲就只用姿態。還沒驗證：實際拿著傾斜時的軸向（iOS 與 Android 的姿態座標系是否一致），需要有人手持測試。
+
+## 20. GPU instancing（2026-11-03，先不做）
+
+翻譯不了的 instancing 變體（cbuffer 的 struct 陣列 `UnityInstancing_PerDraw*`）目前是把該 pass 的 `m_HasInstancingVariant` 關掉，讓 Unity 改用一般的逐物件繪製，畫面正確。實測 Quest Mode 第一關（關卡畫面＋對話）在 Thor 上穩定 60 fps（載入時短暫掉到 51），所以真正的 instancing 翻譯只會換來效能、沒有看得到的差別，先不做。要做的話：segment 格式裡 struct 參數的解析、GLES3 的 std140 uniform block 與 `m_ConstantBufferBindings`、parsed form 的 `m_StructParams`，加上 MSL 端 struct 陣列的翻譯；估 1–2 天，而且做壞的話物件會整個不見，需要逐關比對畫面。等之後遇到掉幀的關卡再回來看。
+
+## 21. 開場影片（2026-11-03）
+
+Android 的影片解碼器用 `ScriptMapper::FindShader("Hidden/VideoDecodeAndroid")` 找 `RGBAExternal_To_RGBA`／`RGBASplitExternal_To_RGBA` 兩個 pass，把 SurfaceTexture（external OES 貼圖）轉成 RGBA。這個著色器是編輯器在 Android 建置時才放進 `unity_builtin_extra`，iOS 資料裡沒有（ScriptMapper 有這個名字但指標是空的），所以影片一直是黑的、每格都 `Blit failed`。`tools/video_decode_android.py`（`patch_shaders.py` 最後會呼叫）用 iOS 的 `Hidden/VideoDecode`（已經有翻譯好的 GLES3 程式）做一份：只留 `Flip_RGBA_To_RGBA` 和 `Flip_RGBASplit_To_RGBA` 兩個 pass、改成 Android 的名字，`_MainTex` 改成 `samplerExternalOES`（加 `GL_OES_EGL_image_external_essl3`），拿掉 iOS 那份的 V 翻轉；以新物件（pathID 16002）加進 `unity_builtin_extra`，再把 globalgamemanagers 裡 ScriptMapper 那一項指向它（fileID 1＝`unity_builtin_extra`）。踩到的坑：物件表要依 pathID 排序（引擎用二分搜尋），`unity_assets.rebuild_serialized` 現在可以新增物件並維持排序。Thor 上 WayForward 標誌和開場動畫都正常播放、方向正確，`Blit failed` 消失。

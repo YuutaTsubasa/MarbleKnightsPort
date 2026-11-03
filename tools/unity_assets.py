@@ -295,22 +295,39 @@ def write_object(tree, value, big=False):
     return bytes(w.b)
 
 
-def rebuild_serialized(sf, replaced):
+def rebuild_serialized(sf, replaced, added=None):
     """Return the SerializedFile bytes with objects {path_id: new bytes} replaced.
 
     Objects keep their order; data is re-laid out with 8-byte alignment and the
     object table (fixed-size entries in the metadata) is rewritten in place.
+    added = {path_id: (type_index, bytes)} appends new objects to the table.
     """
     d = bytearray(sf.data)
     e = ">" if sf.big else "<"
-    # locate the object table again (same walk as the reader)
     meta = bytearray(d[:sf.data_offset])
+    objects = list(sf.objects)
+    if added:
+        # entries are 20 bytes and stay 4-aligned; grow the table at its end
+        end = sf._objects_table_offset
+        for _ in objects:
+            end = ((end + 3) & ~3) + 20
+        meta[end:end] = bytes(20 * len(added))
+        struct.pack_into(e + "i", meta, sf._objects_table_offset - 4, len(objects) + len(added))
+        meta_size = struct.unpack_from(">I", meta, 0)[0] + 20 * len(added)
+        struct.pack_into(">I", meta, 0, meta_size)
+        data_off = max(sf.data_offset, (20 + meta_size + 15) & ~15)
+        meta += bytes(data_off - len(meta)) if data_off > len(meta) else b""
+        del meta[data_off:]
+        struct.pack_into(">I", meta, 12, data_off)
+        for path_id, (tidx, _) in added.items():
+            objects.append((path_id, None, None, tidx))
+        objects.sort(key=lambda o: o[0])  # the engine binary-searches the table by pathID
     out_data = bytearray()
     new_entries = []
-    for path_id, start, size, tidx in sf.objects:
+    for path_id, start, size, tidx in objects:
         while len(out_data) % 8:
             out_data.append(0)
-        blob = replaced.get(path_id, bytes(d[start:start + size]))
+        blob = added[path_id][1] if start is None else replaced.get(path_id, bytes(d[start:start + size]))
         new_entries.append((path_id, len(out_data), len(blob), tidx))
         out_data += blob
     # rewrite entries: find each original entry by its pathID + old start/size bytes
@@ -319,7 +336,7 @@ def rebuild_serialized(sf, replaced):
         p = (p + 3) & ~3
         struct.pack_into(e + "qIIi", meta, p, path_id, start, size, tidx)
         p += 20
-    total = sf.data_offset + len(out_data)
+    total = len(meta) + len(out_data)
     struct.pack_into(">I", meta, 4, total)
     return bytes(meta) + bytes(out_data)
 
