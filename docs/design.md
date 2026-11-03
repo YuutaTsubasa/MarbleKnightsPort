@@ -139,3 +139,20 @@ iOS 版只有 arm64 機器碼，Windows x64 要嘛做 arm64 → x64 的指令轉
 - **圖形 API**：iOS 的 BuildSettings 只列 Metal，Android 播放器會退回 GLES 2.0（要 platform 5）。改成啟動參數 `-force-gles30`（編進我們的 `UnityPlayerActivity`），並在記憶體裡改 `InitializeGfxDevice` 的檢查（0x88ba00，`b.ne` → `b`），否則會出現「Unable to initialize the Unity Engine Gfx API」。
 - **Thor 上的結果**：GLES3 啟動，`Desired shader compiler platform … not available` 的錯誤全部消失，log 裡沒有任何 GLSL 編譯或連結錯誤，畫面也不再是洋紅色。但還**沒看到畫面內容**：片頭影片之後遊戲出現 NullReferenceException 就停在黑畫面。iOS 外掛（Game Center、Apple Arcade）的 ObjC 呼叫目前都被陷阱回傳 0，最可能是這裡。下一步是第 7 節的 D、E（原生外掛、系統整合），之後才能用眼睛確認著色器。
 - 片頭影片：Android 的 VideoPlayer 只能播放 bundle 裡沒壓縮的影片。`tools/repack_videos.py` 改成不壓縮重新打包，但仍然「bundle had some problem while loading」（未解決，遊戲會略過片頭）。
+
+## 11. 開機到 3D 場景（2026-11-03，除錯）
+
+依序解掉的問題（每一項都在 `loader/proxy/proxy.c`）：
+
+1. **受控例外追蹤**：`__cxa_throw` 綁到我們的包裝，每個受控例外記下型別、訊息、回溯；回溯的方法名稱來自執行期建的方法表（IL2CPP API，含巢狀型別，寫到裝置上的 `files/methods.txt`），另外把每個 frame 的 x19–x28 裡的物件型別和字串值印出來（泛型共用程式碼在 API 裡查不到名稱，看暫存器最快）。
+2. CoreFoundation 的 locale key 原本都是 NULL，語言和國家撞在一起變成 `us-us-us`；改成各自不同的常數字串。
+3. 自己寫的 bundle 把 `.resS`／`.resource` 節點標成 flag 4（序列化檔），應為 0；俄文字型與片頭影片因此載入失敗。改正後片頭影片可以播放。
+4. **FMOD**：iOS 的音訊輸出走 AudioUnit／AVAudioSession（都是空的），初始化失敗後一連串例外。把匯出的 `FMOD_Studio_System_Initialize`（16 bytes 的跳板）換成我們的函式：先把 core system 設成 `FMOD_OUTPUTTYPE_NOSOUND` 再呼叫原本的實作。目前**沒有聲音**，之後要換成 AAudio 輸出。
+5. iOS 專用 icall（`iOS.Device`、Unity 的 GameCenterPlatform）自己註冊假的實作。
+6. **iCloud（CloudKit 外掛）**：把 `_CKInitialize` 等 8 個原生函式換成「本機檔案版 iCloud」：帳號可用，紀錄存在 `files/icloud/<record>.bin`，照樣呼叫 C# 的回呼。
+7. **Game Center（遊戲自己的 GameCenter.dll 外掛）**：`_GCInitialize` 立刻回呼 `OnAuthentication(true)`，`_GCLocalPlayer` 回傳本機玩家。沒有這個，存檔系統等不到登入，標題畫面一直在「載入中」、不接受按鍵。
+8. **icall 的 ABI 轉接（重要）**：Apple arm64 的堆疊參數照自然大小緊密排列、而且要求被呼叫端把小於 32 位元的回傳值延伸；Android 的 AAPCS64 每個堆疊參數占 8 bytes、回傳值上半部未定義。`TextGenerator.Populate_Internal` 有 9 個堆疊參數，libunity 把兩個 int 讀成一個指標（`0x5000000004`）而當機。做法：`il2cpp_init` 之後，對引擎註冊的每個 icall 用 IL2CPP API 查出受控簽章，需要時改註冊成一段轉接程式（`trap.S` 的 `mk_icall_adapter`：把 Apple 排列的堆疊參數搬成 AAPCS 排列、延伸 bool／byte／short 回傳值）。7,638 個 icall 裡包了 191 個（190 個是小型回傳值，1 個有堆疊參數）。
+
+結果（Thor）：片頭影片 → 標題畫面（UI、TextMeshPro 文字、觸控與手把提示都正確）→ 點一下開始 → 存檔版本更新對話框 → 「Yes」→ **3D 場景正確繪出**（光照、貼圖、植物、水面動畫），截圖在 `work/2026-11-03-first-3d-scene.png`。
+
+接著要處理：教學關卡 `TutorialEventManager.Start` 裡 `iOSAttackButton`（螢幕上的觸控按鈕）的 NullReferenceException；聲音（FMOD → AAudio）；俄文 bundle；GPU instancing 的著色器變體。

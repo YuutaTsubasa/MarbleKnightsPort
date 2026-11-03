@@ -124,3 +124,52 @@ darwin_longjmp:
     cmp w1, #0
     csinc w0, w1, wzr, ne
     ret
+
+// Apple -> AAPCS64 stack-argument adapter for engine icalls.
+// x16 = descriptor { target, frame_size, n, ret_ext, entries[n] {u16 src, u16 dst, u16 size, u16 pad} }.
+// Apple packs stack arguments by natural size; AAPCS64 gives each one an 8-byte slot.
+// Uses only x9-x17 so the register arguments x0-x7 / d0-d7 pass through untouched.
+    .globl mk_icall_adapter
+mk_icall_adapter:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    str x16, [sp, #16]
+    ldr x9, [x16, #8]          // frame_size (multiple of 16)
+    sub sp, sp, x9
+    ldr w10, [x16, #16]        // n
+    add x11, x16, #24          // entries
+    add x12, x29, #32          // stack arguments as the Apple caller laid them out
+1:  cbz w10, 3f
+    ldrh w13, [x11, #0]        // src
+    ldrh w14, [x11, #2]        // dst
+    ldrh w15, [x11, #4]        // size in bytes (1..8)
+    add x13, x12, x13
+    add x14, sp, x14
+    str xzr, [x14]
+2:  ldrb w17, [x13], #1
+    strb w17, [x14], #1
+    subs w15, w15, #1
+    b.ne 2b
+    add x11, x11, #8
+    sub w10, w10, #1
+    b 1b
+3:  ldr x16, [x29, #16]
+    ldr x17, [x16, #0]
+    blr x17
+    ldr x16, [x29, #16]
+    ldr w9, [x16, #20]         // ret_ext: 0 none, 1 uxtb, 2 sxtb, 3 uxth, 4 sxth
+    cmp w9, #1
+    b.ne 4f
+    and w0, w0, #0xff
+4:  cmp w9, #2
+    b.ne 5f
+    sxtb w0, w0
+5:  cmp w9, #3
+    b.ne 6f
+    and w0, w0, #0xffff
+6:  cmp w9, #4
+    b.ne 7f
+    sxth w0, w0
+7:  mov sp, x29
+    ldp x29, x30, [sp], #32
+    ret
