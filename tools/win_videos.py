@@ -3,7 +3,7 @@
 The Windows player decodes H.264 with Media Foundation, which it only uses under Direct3D; this
 build runs on OpenGL ES 3 (the only shaders the data has), so the videos stayed black ("Microsoft
 Media Foundation video decoding to texture disabled" in Player.log). Unity's own VP8 decoder works
-with any graphics API, so each clip is transcoded with ffmpeg (VP8 + Vorbis, at most 1080 lines)
+with any graphics API, so each clip is transcoded with ffmpeg (VP8 without audio, at most 1080 lines)
 and its VideoClip object updated (size, path, dimensions).
 
 usage: python -I tools/win_videos.py [MarbleKnights_Data dir]
@@ -36,10 +36,9 @@ def transcode(raw, v):
         src, dst = os.path.join(tmp, "in.mp4"), os.path.join(tmp, "out.webm")
         with open(src, "wb") as f:
             f.write(raw)
-        audio = ["-c:a", "libvorbis", "-q:a", "5"] if v["m_AudioChannelCount"] else ["-an"]
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", src, "-vf", f"scale={w}:{h}", "-c:v", "libvpx",
-                        "-b:v", "6M", "-crf", "8", "-deadline", "good", "-cpu-used", "2", "-auto-alt-ref", "0"]
-                       + audio + [dst], check=True)
+                        "-b:v", "6M", "-crf", "8", "-deadline", "good", "-cpu-used", "2", "-auto-alt-ref", "0",
+                        "-an", dst], check=True)
         return open(dst, "rb").read(), w, h
 
 
@@ -64,6 +63,9 @@ def convert_serialized(sf, res, tree=None):
         res[name] = bytes(blob + webm)
         v["m_OriginalPath"] = os.path.splitext(v["m_OriginalPath"])[0] + ".webm"
         v["Width"], v["Height"], v["m_ProxyWidth"], v["m_ProxyHeight"] = w, h, w, h
+        # no audio track: the game plays with Unity audio off (FMOD), and a clip with audio never
+        # advances (VideoPlayer.time stays 0, the boot sequence waits forever)
+        v["m_AudioChannelCount"], v["m_AudioSampleRate"], v["m_AudioLanguage"] = [], [], []
         replaced[pid] = u.write_object(t, v, sf.big)
         print(f"  {v['m_Name']}: {len(raw) // 1024} KiB H.264 -> {len(webm) // 1024} KiB VP8 {w}x{h}")
     return (u.rebuild_serialized(sf, replaced) if replaced else None), len(replaced)
@@ -102,7 +104,7 @@ def convert_bundle(path):
             n += k
     if n:
         out.update(res)
-        u.write_bundle(path + ".tmp", out)
+        u.write_bundle(path + ".tmp", out, compress=False)  # the player streams video from the archive: no LZ4
         os.replace(path + ".tmp", path)  # replaces the hard link; the Android original is untouched
     return n
 
@@ -149,7 +151,12 @@ def main():
             if not any(k.endswith(".resource") for k in entries):
                 continue
             print(os.path.relpath(path, sa))
-            total += convert_bundle(path)
+            k = convert_bundle(path)
+            if not k and os.path.getsize(path) < sum(len(d) for d in entries.values()):
+                u.write_bundle(path + ".tmp", entries, compress=False)  # converted by an earlier version (LZ4)
+                os.replace(path + ".tmp", path)
+                print("  rewritten uncompressed")
+            total += k
     total += convert_loose(data_dir, tree)
     print(f"{total} video clips converted to VP8")
 

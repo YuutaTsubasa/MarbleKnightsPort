@@ -7,6 +7,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <direct.h>
@@ -152,12 +153,32 @@ static int own_window_focused(void) {
 static int key(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 static float stick(SHORT v) { float f = v / 32767.0f; if (f < -1) f = -1; return (f > -0.24f && f < 0.24f) ? 0 : f; }
 
-// slots = XInput users 0-3 that are connected. The keyboard is not a pad here: Rewired reads it
-// itself, and an always-connected pad kept the game in controller mode (no touch controls).
+// A pad reaches the game only once it has been used (a button, a trigger or a stick moved): a
+// connected pad takes the player over and the touch controls (the mouse) stop working, so a pad
+// lying on the desk must not count. The keyboard is not a pad here: Rewired reads it itself.
+static int xi_get(DWORD u, xi_state *s) {  // 1 = connected and used
+    static int used[4], loaded;
+    if (!loaded) {
+        loaded = 1;
+        HMODULE x = LoadLibraryA("xinput1_4.dll");
+        if (!x) x = LoadLibraryA("xinput9_1_0.dll");
+        g_xinput_get = x ? (DWORD (WINAPI *)(DWORD, xi_state *))GetProcAddress(x, "XInputGetState") : NULL;
+    }
+    if (!g_xinput_get || u >= 4 || g_xinput_get(u, s) != 0) { if (u < 4) used[u] = 0; return 0; }
+    if (!used[u]) {
+        const xi_gamepad *g = &s->pad;
+        int moved = abs(g->lx) > 16000 || abs(g->ly) > 16000 || abs(g->rx) > 16000 || abs(g->ry) > 16000;
+        if (!g->buttons && g->lt < 64 && g->rt < 64 && !moved) return 0;
+        used[u] = 1;
+        mk_log("gamepad on XInput user %lu used: presented to the game", (unsigned long)u);
+    }
+    return 1;
+}
+// slots = XInput users 0-3 that are connected and used
 static unsigned agc_slots(void) {
     unsigned m = 0;
     xi_state s;
-    for (DWORD u = 0; g_xinput_get && u < 4; u++) if (g_xinput_get(u, &s) == 0) m |= 1u << u;
+    for (DWORD u = 0; u < 4; u++) if (xi_get(u, &s)) m |= 1u << u;
     return m;
 }
 static apple_controller pad_state(int slot) {
@@ -165,7 +186,7 @@ static apple_controller pad_state(int slot) {
     memset(&p, 0, sizeof(p));
     p.is_valid = 1;
     xi_state s;
-    if (g_xinput_get && g_xinput_get((DWORD)slot, &s) == 0) {
+    if (xi_get((DWORD)slot, &s)) {
         WORD b = s.pad.buttons;
         p.lx = stick(s.pad.lx); p.ly = stick(s.pad.ly); p.rx = stick(s.pad.rx); p.ry = stick(s.pad.ry);
         p.dx = (b & 0x8 ? 1.0f : 0) - (b & 0x4 ? 1.0f : 0);
@@ -182,9 +203,8 @@ static void agc_initialize(cpu *c) {
     g_agc_connected = h[0];
     g_agc_disconnected = h[1];
     g_main_tid = GetCurrentThreadId();
-    HMODULE x = LoadLibraryA("xinput1_4.dll");
-    if (!x) x = LoadLibraryA("xinput9_1_0.dll");
-    g_xinput_get = x ? (DWORD (WINAPI *)(DWORD, xi_state *))GetProcAddress(x, "XInputGetState") : NULL;
+    xi_state s;
+    xi_get(0, &s);  // loads XInput
     g_agc_ready = 1;
     mk_log("AppleGameController(windows) initialize: XInput %s", g_xinput_get ? "found" : "missing");
 }
@@ -428,7 +448,7 @@ static void *(*g_joy_names)(void);
 static uint8_t (*g_get_key)(int32_t);
 static float (*g_axis_raw)(void *), (*g_axis)(void *);
 static int log_joy(void) { static int on = -1; if (on < 0) { char v[4] = ""; GetEnvironmentVariableA("MK_LOG_JOY", v, sizeof(v)); on = v[0] != '0'; } return on; }
-static int xi_state_of(int pad, xi_state *s) { return g_xinput_get && pad >= 0 && pad < 4 && g_xinput_get((DWORD)pad, s) == 0; }
+static int xi_state_of(int pad, xi_state *s) { return pad >= 0 && pad < 4 && xi_get((DWORD)pad, s); }
 static int ios_button(int pad, int b) {
     xi_state s;
     if (!xi_state_of(pad, &s)) return 0;
@@ -475,13 +495,20 @@ static void *joystick_names(void) {
     uint64_t n = *(uint64_t *)(arr + 0x18);
     for (uint64_t i = 0; i < n && i < 4; i++) {
         xi_state st;
-        if (!xi_state_of((int)i, &st)) continue;
+        if (!xi_state_of((int)i, &st)) {  // not used yet: "" is how Unity reports an empty slot
+            if (g_xinput_get && g_xinput_get((DWORD)i, &st) == 0) ((void **)(arr + 0x20))[i] = il2cpp_string_new("");
+            continue;
+        }
         char name[96];
         snprintf(name, sizeof(name), "[extended,wireless] joystick %d by Xbox Wireless Controller", (int)i + 1);
         ((void **)(arr + 0x20))[i] = il2cpp_string_new(name);
     }
-    static int logged;
-    if (!logged && n) { char nm[128]; managed_ascii(((void **)(arr + 0x20))[0], nm, sizeof(nm)); mk_log("joystick 0 presented as '%s'", nm); logged = 1; }
+    static char last[128] = "?";
+    if (n) {
+        char nm[128];
+        managed_ascii(((void **)(arr + 0x20))[0], nm, sizeof(nm));
+        if (strcmp(nm, last)) { mk_log("joystick 0 presented as '%s'", nm); strcpy(last, nm); }
+    }
     return arr;
 }
 static uint8_t get_key(int32_t code) {
