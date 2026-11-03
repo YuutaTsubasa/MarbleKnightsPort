@@ -89,16 +89,19 @@ static int button(int pad, int b) {
     return (g_get_key(350 + pad * 20 + b) & 0xff) != 0;  // KeyCode.Joystick1Button0 = 350
 }
 
-int mk_gamepad_count(void) {
+// Bit mask of Unity joystick slots that have a pad (Unity keeps a disconnected pad's slot with an
+// empty name, so slots are not compact like Apple's GCController.controllers list).
+unsigned mk_gamepad_slots(void) {
     if (!g_joy_names) return 0;
     void *arr = g_joy_names();
     if (!arr) return 0;
-    size_t len = *(size_t *)((char *)arr + 0x18), n = 0;
+    size_t len = *(size_t *)((char *)arr + 0x18);
+    unsigned mask = 0;
     for (size_t i = 0; i < len && i < MAX_PADS; i++) {
         void *s = ((void **)((char *)arr + 0x20))[i];
-        if (s && *(int *)((char *)s + 16) > 0) n = i + 1;  // empty names are disconnected slots
+        if (s && *(int *)((char *)s + 16) > 0) mask |= 1u << i;
     }
-    return (int)n;
+    return mask;
 }
 
 static void debug_scan(int pad) {
@@ -116,10 +119,11 @@ static void debug_scan(int pad) {
     if (bits != *last_buttons) { LOG("pad %d buttons %05x", pad, bits); *last_buttons = bits; }
 }
 
+// pad = Unity joystick slot (the caller maps the game's controller index to a slot)
 apple_controller mk_gamepad_get(int pad) {
     apple_controller c;
     memset(&c, 0, sizeof(c));
-    if (pad < 0 || pad >= mk_gamepad_count()) return c;
+    if (pad < 0 || pad >= MAX_PADS) return c;
     c.is_valid = 1;
     c.lx = axis(pad, map("lx")); c.ly = axis(pad, map("ly"));
     c.rx = axis(pad, map("rx")); c.ry = axis(pad, map("ry"));

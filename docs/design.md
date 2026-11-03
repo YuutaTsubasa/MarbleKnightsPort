@@ -221,3 +221,13 @@ NiceVibrations 在 iOS 走 `MMVibrationManager.SelectionHaptic()` 等 extern（9
 ## 21. 開場影片（2026-11-03）
 
 Android 的影片解碼器用 `ScriptMapper::FindShader("Hidden/VideoDecodeAndroid")` 找 `RGBAExternal_To_RGBA`／`RGBASplitExternal_To_RGBA` 兩個 pass，把 SurfaceTexture（external OES 貼圖）轉成 RGBA。這個著色器是編輯器在 Android 建置時才放進 `unity_builtin_extra`，iOS 資料裡沒有（ScriptMapper 有這個名字但指標是空的），所以影片一直是黑的、每格都 `Blit failed`。`tools/video_decode_android.py`（`patch_shaders.py` 最後會呼叫）用 iOS 的 `Hidden/VideoDecode`（已經有翻譯好的 GLES3 程式）做一份：只留 `Flip_RGBA_To_RGBA` 和 `Flip_RGBASplit_To_RGBA` 兩個 pass、改成 Android 的名字，`_MainTex` 改成 `samplerExternalOES`（加 `GL_OES_EGL_image_external_essl3`），拿掉 iOS 那份的 V 翻轉；以新物件（pathID 16002）加進 `unity_builtin_extra`，再把 globalgamemanagers 裡 ScriptMapper 那一項指向它（fileID 1＝`unity_builtin_extra`）。踩到的坑：物件表要依 pathID 排序（引擎用二分搜尋），`unity_assets.rebuild_serialized` 現在可以新增物件並維持排序。Thor 上 WayForward 標誌和開場動畫都正常播放、方向正確，`Blit failed` 消失。
+
+## 22. 同一台多支手把（2026-11-03）
+
+用 Android 內建的 `uinput` 指令（shell 使用者就能用，不需要 root）在 Thor 上做虛擬手把：`tools/vpad.sh`（`VPAD=n` 可以同時開好幾支），身分照抄內建手把（USB `2020:0112`、同樣的 evdev 按鍵與軸），Android 和 Unity 都當成一般手把。要在拿著 `thor` 鎖的時候用。
+
+實測（兩支虛擬手把＋內建手把）：熱插拔有連線事件；Multiplayer → Player Setup 按 A 各自加入 P1、P2；Mode Select 的 Battle Arena（2–4 人）解鎖；角色選擇兩個游標各自移動；Quest Mode 第一關兩個角色各自被自己的手把控制。拔掉手把時遊戲自己跳「Controller Disconnected!」。
+
+修掉的問題：遊戲的控制器編號照 Apple 的 `GCController.controllers`（連線順序的緊密清單，拔掉一支後面的往前補；`CustomAppleController.AdjustControllerIndexForDisconnect`），但 Unity 的搖桿槽位會保留空位。原本拔掉中間那支時，我們不送斷線事件，後面那支的編號也對不到。現在 `proxy.c` 用 `g_agc_slot[]` 把遊戲的編號對到 Unity 槽位：斷線時從清單移除並送那個編號的斷線事件，新的手把接到清單最後。驗證：拔掉 P1（中間那支）後，P2 仍由原本的手把控制；重新插上的手把成為第 3 支。
+
+遊戲自己的行為（iOS 上也一樣）：拔掉的那位玩家會被改到編號 0 的手把（Thor 的內建手把）。

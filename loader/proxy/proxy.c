@@ -1035,13 +1035,17 @@ const void *mk_find_icall(const char *name) {
 
 typedef struct { uint8_t raw[40]; } apple_controller_raw;
 apple_controller_raw mk_gamepad_get(int pad);
-int mk_gamepad_count(void);
+unsigned mk_gamepad_slots(void);
 const char *mk_gamepad_glyph(const char *element);
 void mk_gamepad_init(const char *files_dir, int debug);
 
 static void (*g_agc_connected)(int is_micro, int is_extended, int index);
 static void (*g_agc_disconnected)(int is_micro, int is_extended, int index);
-static int g_agc_ready, g_agc_known = 0;
+// The game's controller index follows Apple's GCController.controllers: a compact list in
+// connection order, where a disconnect removes the entry and the later ones move down
+// (CustomAppleController.AdjustControllerIndexForDisconnect). g_agc_slot maps it to Unity's
+// joystick slots, which keep their numbers.
+static int g_agc_ready, g_agc_known = 0, g_agc_slot[4];
 
 static void agc_initialize(void *const *handlers) {
     g_agc_connected = (void (*)(int, int, int))handlers[0];
@@ -1053,22 +1057,29 @@ static void agc_noop(void) {}
 static int agc_count(void) { return g_agc_known; }
 static const char *agc_vendor(int i) { (void)i; return strdup("Xbox Wireless Controller"); }
 static const char *agc_glyph(const char *element, int i) { (void)i; return mk_gamepad_glyph(element); }
-static apple_controller_raw agc_get(int i) { return mk_gamepad_get(i); }
+static apple_controller_raw agc_get(int i) {
+    if (i < 0 || i >= g_agc_known) { apple_controller_raw none = { { 0 } }; return none; }
+    return mk_gamepad_get(g_agc_slot[i]);
+}
 
 // main thread, from the engine's managed calls: report pads appearing / disappearing
 static void agc_pump(void) {
     static unsigned tick;
     if (!g_agc_ready || (tick++ % 256)) return;
-    int n = mk_gamepad_count();
-    while (g_agc_known < n) {
-        int i = g_agc_known++;
-        LOG("gamepad %d connected", i);
-        if (g_agc_connected) g_agc_connected(0, 1, i);
-    }
-    while (g_agc_known > n) {
-        int i = --g_agc_known;
-        LOG("gamepad %d disconnected", i);
+    unsigned slots = mk_gamepad_slots(), known = 0;
+    for (int i = 0; i < g_agc_known;) {
+        if (slots & (1u << g_agc_slot[i])) { known |= 1u << g_agc_slot[i]; i++; continue; }
+        LOG("gamepad %d (slot %d) disconnected", i, g_agc_slot[i]);
+        memmove(&g_agc_slot[i], &g_agc_slot[i + 1], (size_t)(g_agc_known - i - 1) * sizeof(int));
+        g_agc_known--;
         if (g_agc_disconnected) g_agc_disconnected(0, 1, i);
+    }
+    for (int s = 0; s < 4 && g_agc_known < 4; s++) {
+        if (!(slots & ~known & (1u << s))) continue;
+        int i = g_agc_known++;
+        g_agc_slot[i] = s;
+        LOG("gamepad %d (slot %d) connected", i, s);
+        if (g_agc_connected) g_agc_connected(0, 1, i);
     }
 }
 
