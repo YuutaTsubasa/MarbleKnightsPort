@@ -90,8 +90,18 @@ def main():
     jdir = os.path.join(STAGE, "java")
     os.makedirs(jdir)
     classes_jar = os.path.join(VAR, "Classes", "classes.jar")
+    # The iOS BuildSettings only list Metal, so the Android player would fall back to GLES 2.0;
+    # our patched shaders carry GLES3 programs, so ask for GLES 3.0 explicitly.
+    src_dir = os.path.join(STAGE, "src", "com", "unity3d", "player")
+    os.makedirs(src_dir)
+    activity = open(os.path.join(PLAYER, "Source", "com", "unity3d", "player", "UnityPlayerActivity.java")).read()
+    activity = activity.replace("        return cmdLine;
+",
+                                '        return (cmdLine == null ? "" : cmdLine + " ") + "-force-gles30";
+', 1)
+    open(os.path.join(src_dir, "UnityPlayerActivity.java"), "w").write(activity)
     run("javac", "-source", "8", "-target", "8", "-nowarn", "-cp", PLATFORM + os.pathsep + classes_jar, "-d", jdir,
-        os.path.join(PLAYER, "Source", "com", "unity3d", "player", "UnityPlayerActivity.java"))
+        os.path.join(src_dir, "UnityPlayerActivity.java"))
     classes = [os.path.join(dp, f) for dp, _, fs in os.walk(jdir) for f in fs if f.endswith(".class")]
     dexdir = os.path.join(STAGE, "dex")
     os.makedirs(dexdir)
@@ -117,6 +127,9 @@ def main():
                 continue
             for name in files:
                 src = os.path.join(dirpath, name)
+                patched = os.path.join(WORK, "patched", "Data", os.path.relpath(src, data))
+                if os.path.exists(patched):  # shaders with GLES3 programs added (tools/patch_shaders.py)
+                    src = patched
                 arc = "assets/bin/Data/" + ("" if rel == "." else rel + "/") + name
                 if rel.startswith("Raw"):
                     arc = "assets/" + ("" if rel == "Raw" else rel[4:] + "/") + name  # StreamingAssets
