@@ -8,6 +8,7 @@
 #include <android/log.h>
 #include <dlfcn.h>
 #include <libgen.h>
+#include <pthread.h>
 #include <link.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -160,6 +161,12 @@ __attribute__((visibility("default"))) void il2cpp_set_config_dir(const char *d)
 static void on_throw(void *obj, void *tinfo);
 static void register_ios_icalls(void);
 static void adapt_icalls(void);
+static void *find_class_path(const char *);
+extern void *il2cpp_class_get_fields(void *, void **);
+extern const char *il2cpp_field_get_name(void *);
+extern const void *il2cpp_field_get_type(void *);
+extern size_t il2cpp_field_get_offset(void *);
+extern char *il2cpp_type_get_name(const void *);
 static void record_icall(const char *, const void *);
 static void dump_class(const char *, const char *);
 static void patch_image(void);
@@ -172,6 +179,16 @@ __attribute__((visibility("default"))) int il2cpp_init(const char *domain) {
     register_ios_icalls();
     adapt_icalls();
     if (getenv("MK_DUMP")) dump_class("GameCenter", "GameCenter");
+    {
+        static const char *structs[] = { "CloudKit.CloudKitInterface/EventHandlers", "GameCenter.GameCenter/EventHandlers", 0 };
+        for (int i = 0; structs[i]; i++) {
+            void *k = find_class_path(structs[i]), *it = NULL, *f;
+            if (!k) { LOG("struct %s not found", structs[i]); continue; }
+            while ((f = il2cpp_class_get_fields(k, &it)))
+                LOG("struct %s: +%zu %s %s", structs[i], il2cpp_field_get_offset(f), il2cpp_type_get_name(il2cpp_field_get_type(f)),
+                    il2cpp_field_get_name(f));
+        }
+    }
     return r;
 }
 
@@ -206,11 +223,13 @@ __attribute__((visibility("default"))) uint32_t il2cpp_method_get_param_count(co
 extern void *real_il2cpp_runtime_invoke(const void *, void *, void **, void **);
 extern void *real_il2cpp_runtime_invoke_convert_args(const void *, void *, void **, int, void **);
 static void trace_invoke(const void *m, void **params);
+static void ck_pump(void);
 static void watch_object(const void *m, void *obj);
 __attribute__((visibility("default"))) void *il2cpp_runtime_invoke(const void *m, void *obj, void **params, void **exc) {
     if (!m) { if (exc) *exc = NULL; return NULL; }
     trace_invoke(m, params);
     if (obj) watch_object(m, obj);
+    ck_pump();
     return real_il2cpp_runtime_invoke(m, obj, params, exc);
 }
 __attribute__((visibility("default"))) void *il2cpp_runtime_invoke_convert_args(const void *m, void *obj, void **params,
@@ -234,7 +253,13 @@ static void *icall_get_streamingAssetsPath(void) {
     return il2cpp_string_new(p);
 }
 
+// The game is an iOS build: platform checks (PerPlatformDisable, touch controls, save paths)
+// expect RuntimePlatform.IPhonePlayer (8).
+static int icall_get_platform(void) { return 8; }
+
 static const struct { const char *name; const void *fn; } g_icall_overrides[] = {
+    { "UnityEngine.Application::get_platform", icall_get_platform },
+    { "UnityEngine.Application::get_platform()", icall_get_platform },
     { "UnityEngine.Application::get_streamingAssetsPath", icall_get_streamingAssetsPath },
     { "UnityEngine.Application::get_streamingAssetsPath()", icall_get_streamingAssetsPath },
 };
@@ -555,16 +580,55 @@ static void ck_initialize(const ck_handlers *h, const char *container) {
     LOG("CloudKit(local) initialize container=%s", container ? container : "(null)");
     if (g_ck.account_status_changed) g_ck.account_status_changed();
 }
-static int ck_account_status(void) { return 1; /* CKAccountStatusAvailable */ }
+static int ck_account_status(void) { return 3; /* CKAccountStatusNoAccount: the game then keeps saves locally */ }
 static const char *ck_get_auth_error(void) { return strdup(""); }
 static void ck_shutdown(void) {}
+// Real CloudKit answers asynchronously, and the game registers its completion handler only after
+// FetchRecord/SaveRecord return, so results are queued and delivered from the main thread later
+// (the next time the engine calls into managed code, see ck_pump).
+typedef struct ck_event { int kind; char *record; void *data; int len; double due; struct ck_event *next; } ck_event;
+static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
+static ck_event *g_ck_head, **g_ck_tail = &g_ck_head;
+static pthread_mutex_t g_ck_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void ck_post(int kind, const char *record, void *data, int len) {
+    ck_event *e = calloc(1, sizeof(*e));
+    e->kind = kind; e->record = strdup(record ? record : ""); e->data = data; e->len = len;
+    e->due = now_s() + 1.5;  // like a network round trip; the game sets up its save objects meanwhile
+    pthread_mutex_lock(&g_ck_lock);
+    *g_ck_tail = e; g_ck_tail = &e->next;
+    pthread_mutex_unlock(&g_ck_lock);
+}
+
+static void ck_pump(void) {
+    static int busy;
+    if (busy || !g_ck_head) return;
+    busy = 1;
+    for (;;) {
+        pthread_mutex_lock(&g_ck_lock);
+        ck_event *e = g_ck_head;
+        if (e && e->due > now_s()) e = NULL;
+        else if (e) { g_ck_head = e->next; if (!g_ck_head) g_ck_tail = &g_ck_head; }
+        pthread_mutex_unlock(&g_ck_lock);
+        if (!e) break;
+        switch (e->kind) {
+        case 0: if (g_ck.fetch_succeeded) g_ck.fetch_succeeded(e->data, e->len, e->record, "local"); break;
+        case 1: if (g_ck.fetch_failed) g_ck.fetch_failed(e->record, 11 /* CKErrorUnknownItem */, "Record not found", e->record); break;
+        case 2: if (g_ck.save_succeeded) g_ck.save_succeeded(e->record, "local"); break;
+        case 3: if (g_ck.save_failed) g_ck.save_failed(e->record, 1, "local write failed", e->record); break;
+        }
+        free(e->data); free(e->record); free(e);
+    }
+    busy = 0;
+}
+
 static void ck_fetch_record(const char *record) {
     char path[700];
     ck_path(record, path, sizeof(path));
     FILE *f = fopen(path, "rb");
     if (!f) {
         LOG("CloudKit(local) fetch %s: no record", record);
-        if (g_ck.fetch_failed) g_ck.fetch_failed(record, 11 /* CKErrorUnknownItem */, "Record not found", "");
+        ck_post(1, record, NULL, 0);
         return;
     }
     fseek(f, 0, SEEK_END);
@@ -574,8 +638,7 @@ static void ck_fetch_record(const char *record) {
     n = (long)fread(buf, 1, n, f);
     fclose(f);
     LOG("CloudKit(local) fetch %s: %ld bytes", record, n);
-    if (g_ck.fetch_succeeded) g_ck.fetch_succeeded(buf, (int)n, record, "local");
-    free(buf);
+    ck_post(0, record, buf, (int)n);
 }
 static void ck_save_record(const void *data, int len, const char *record) {
     char path[700], tmp[720];
@@ -586,8 +649,7 @@ static void ck_save_record(const void *data, int len, const char *record) {
     if (f) fclose(f);
     ok = ok && rename(tmp, path) == 0;
     LOG("CloudKit(local) save %s: %d bytes %s", record, len, ok ? "ok" : "FAILED");
-    if (ok && g_ck.save_succeeded) g_ck.save_succeeded(record, "local");
-    else if (!ok && g_ck.save_failed) g_ck.save_failed(record, 1, "local write failed", "");
+    ck_post(ok ? 2 : 3, record, NULL, 0);
 }
 static void ck_reverse_save_record(const char *record) { LOG("CloudKit(local) reverse save %s ignored", record); }
 static void ck_show_alert(const char *a, const char *b, const char *c) {
@@ -642,6 +704,7 @@ extern void *il2cpp_class_get_fields(void *, void **);
 extern const char *il2cpp_field_get_name(void *);
 extern const void *il2cpp_field_get_type(void *);
 extern size_t il2cpp_field_get_offset(void *);
+extern char *il2cpp_type_get_name(const void *);
 extern int il2cpp_type_get_type(const void *);
 extern int il2cpp_field_get_flags(void *);
 extern void *il2cpp_class_get_parent(void *);
@@ -667,6 +730,17 @@ static void dump_fields(void *obj) {
                 void *o = *(void **)p;
                 char cn2[160];
                 if (!o) snprintf(v, sizeof(v), "null");
+                else if (object_class_name((uintptr_t)o, cn2, sizeof(cn2)) && !strcmp(cn2, "System.String[]")) {
+                    // Il2CppArray: klass, monitor, bounds, max_length @0x18, data @0x20
+                    size_t len = *(size_t *)((char *)o + 0x18), q = 0;
+                    int w = snprintf(v, sizeof(v), "[");
+                    for (; q < len && w < (int)sizeof(v) - 20; q++) {
+                        char sv[40];
+                        utf16_to_ascii(((void **)((char *)o + 0x20))[q], sv, sizeof(sv));
+                        w += snprintf(v + w, sizeof(v) - w, "%s%s", q ? "," : "", sv);
+                    }
+                    snprintf(v + w, sizeof(v) - w, "]");
+                }
                 else if (object_class_name((uintptr_t)o, cn2, sizeof(cn2))) snprintf(v, sizeof(v), "%s", cn2);
                 else snprintf(v, sizeof(v), "%p", o);
                 break;

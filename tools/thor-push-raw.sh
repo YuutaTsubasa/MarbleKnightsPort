@@ -8,14 +8,16 @@ export LOCK_SESSION="${LOCK_SESSION:-marble-knights}" LOCK_MODEL="${LOCK_MODEL:-
 exec "$ops/tools/lock/with-lock.sh" thor 20 "Marble Knights push StreamingAssets" -- bash -c '
 export MSYS_NO_PATHCONV=1
 dst=/sdcard/Android/data/com.yuutatsubasa.marbleknights/files/Raw
+# the game runs as RuntimePlatform.IPhonePlayer, so bundles keep their iOS names on the device
+mapname() { echo "$1" | sed -e "s|AssetBundles/android/android|AssetBundles/ios/ios|" -e "s|AssetBundles/android/|AssetBundles/ios/|"; }
 adb -s cc6a97fe shell mkdir -p $dst
 # adbd may not create nested dirs here ("secure_mkdirs failed"), and one huge directory
 # push dies with "failed to read copy response: EOF": make the dirs with the shell, push file by file.
 cd "$0/work/raw-android"
-dirs=$(find . -mindepth 1 -type d | sed "s|^\./||" | sed "s|^|$dst/|" | tr "
+dirs=$(find . -mindepth 1 -type d | sed "s|^\./||" | while read -r x; do echo "$dst/$(mapname "$x")"; done | tr "
 " " ")
 adb -s cc6a97fe shell mkdir -p $dst $dirs
 find . -type f | sed "s|^\./||" | while read -r f; do
-  adb -s cc6a97fe push --sync "$f" "$dst/$f" > /dev/null || echo "FAILED $f"
+  adb -s cc6a97fe push --sync "$f" "$dst/$(mapname "$f")" > /dev/null || echo "FAILED $f"
 done
 adb -s cc6a97fe shell du -sh $dst' "$(cd "$here" && pwd -W)"

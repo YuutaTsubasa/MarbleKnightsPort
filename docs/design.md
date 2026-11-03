@@ -156,3 +156,13 @@ iOS 版只有 arm64 機器碼，Windows x64 要嘛做 arm64 → x64 的指令轉
 結果（Thor）：片頭影片 → 標題畫面（UI、TextMeshPro 文字、觸控與手把提示都正確）→ 點一下開始 → 存檔版本更新對話框 → 「Yes」→ **3D 場景正確繪出**（光照、貼圖、植物、水面動畫），截圖在 `work/2026-11-03-first-3d-scene.png`。
 
 接著要處理：教學關卡 `TutorialEventManager.Start` 裡 `iOSAttackButton`（螢幕上的觸控按鈕）的 NullReferenceException；聲音（FMOD → AAudio）；俄文 bundle；GPU instancing 的著色器變體。
+
+## 12. 進入可操作的教學關卡（2026-11-03）
+
+1. `iOSAttackButton.ToggleTutorialAttackVisual` 的例外：引擎回報 `Application.platform` = Android，遊戲的 `PerPlatformDisable` 就把 iOS 的觸控按鈕刪掉，其他 iOS 程式碼又還在用。**改成對 C# 回報 `IPhonePlayer`**（覆寫 `Application.get_platform` icall）。連帶 AssetBundle 要放回 iOS 的資料夾名稱 `AssetBundles/ios/ios`（推檔腳本會自動對應，本機的 `work/raw-android` 不用改）。
+2. iOS 模式下存檔走 iCloud。我們的本機 CloudKit 回報「找不到紀錄」時，遊戲還沒建好存檔物件，載入永遠不會完成（照遊戲自己的 log：「failed iCloud load while not logged in」）。**改成回報沒有 iCloud 帳號**（`_CKAccountStatus` → NoAccount），遊戲就改用 `SSPlayerPrefs`，也就是 Android 的 SharedPreferences，存檔會留在 App 裡。CloudKit 的回呼也改成排隊、延遲約 1.5 秒、在主執行緒送出，比較接近真的 CloudKit。
+3. 測試腳本可以送點擊、長按、拖曳、按鍵（`TAPS="62:960,800 74:1085,710 112:960,700 128:drag=400,800,250,600"`），並且指定在第 0 號螢幕：Thor 有兩個螢幕，系統的焦點常在第二個螢幕的啟動器上。
+
+結果（Thor）：標題 → 存檔版本對話框 → 教學關卡「Welcome to Marble Knights」→「Tap and drag your Left Thumb to move.」→ 拖曳之後騎士移動、教學前進到下一步（「Some treasure is strewn about」）。這一輪沒有任何受控例外。截圖：`work/2026-11-03-tutorial.png`、`work/2026-11-03-gameplay.png`。
+
+還沒做：聲音（FMOD 目前無聲）、有一個 Shader 沒有 GLES3 程式（log 出現一次 `platform 9 is not available`，多半是 instancing 變體）、片頭影片的解碼著色器（`VideoDecoder::Blit failed`，畫面可能是黑的）、俄文 bundle、手把與長時間遊玩測試。
