@@ -142,4 +142,8 @@ Rewired 會印「ControllerDataFiles is missing critical data!」，要和 Andro
 - **第二輪（同一天）**：第一版轉的 VP8 帶 Vorbis 聲音，使用者測還是黑的。推測：這款遊戲關掉 Unity 自己的聲音（用 FMOD），影片如果有音軌會跟著停住的聲音時鐘，`VideoPlayer.time` 一直是 0，只顯示第一格（黑）。改成不帶音軌（開頭影片的聲音本來就不靠它）；bundle 也改成不壓縮，跟原版一樣（播放器要從封存檔直接串流影片）。
 - 自己開遊戲測時要注意：視窗沒拿到焦點，Unity 會暫停（啟動流程停在 `Bootstrap - initalizing item 1`），看起來像當掉，其實是測法的問題；而且 ffmpeg 的 gdigrab 抓得到畫面，但會干擾使用者，盡量讓使用者測。
 - **手把只在用過之後才算連上**：使用者以為拔掉了，但 XInput 一直回報 0 號手把連著（Windows 也看得到 Xbox One 控制器）。現在手把要按過鍵、扳機或推過搖桿才報給遊戲（AppleGameController 與 Unity 搖桿名單都一樣；沒用過的位置回報空字串，跟 Unity 表示空位的方式一樣），桌上放著不碰的手把就不會搶走觸控。
+- **更正（同一天）**：VP8 影片沒有讓 Apple Arcade 出現，還讓 WayForward 標誌沒了聲音；「手把用過才算」也跟觸控無關。兩個都還原了，`win_videos.py` 刪掉。教訓：先量再改。
+- `tools/a64toc.py` 加了 `A64TOC_TRACE=<offset>,...`：被列的函式進入時呼叫 runtime 的 `mk_trace`（`plugins_win.c` 有名字表，印 x0、x1、s0–s2 與 frame）；只有含這些函式的 chunk 會變，重建約 3–6 分鐘。
+- **觸控的真正原因（追蹤確認）**：關卡裡 `iOSMobileHUD.Start`、`UIJoystick.Start`、`CustomTiltControl.SetUIJoystick` 都沒被呼叫，`CustomTiltControl.OnInputUpdate` 每格在跑但拿不到搖桿。`CustomTiltControl.Start` 與 `iOSAttackButton.OnEnable` 等 iOS 控制元件會先看 `Application.platform`，Windows 播放器回 WindowsPlayer，觸控介面就不建立。不能讓整個遊戲以為是 iOS（`SaveLoadManager.IdentifyPlatform` 對 iPhone 走另一套存檔），所以只有這 6 個函式裡呼叫 `Application.get_platform` 的地方由轉換器直接填 8（IPhonePlayer）。轉換後的程式 `bl` 時 x30 填 0，沒辦法在執行期看是誰呼叫的。
+- Apple Arcade 標誌：使用者回報全螢幕會顯示、視窗化會黑著卡住（點一下跳到下一個）。`BootstrapAppleArcade` 是依 `Camera.aspect` 和 5 個比例（容許 0.01）挑圖片（`Image.set_sprite`），不是影片；視窗的長寬比可能對不上。已加追蹤（`CloseEnough` 的參數）待下次 log 確認。
 
