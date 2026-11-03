@@ -1,0 +1,290 @@
+// Windows replacements for the game's iOS native plugins (the same ones loader/proxy replaces on
+// Android): CloudKit saves as local files, a signed-in Game Center player, AppleGameController
+// answered from XInput and the keyboard, and no-op haptics / compass. Each replaces a translated
+// UnityFramework function (offsets in UnityFramework 2.3.1, as in the Android proxy), so it takes
+// the guest registers: arguments in X(0..7), results in x0 (or v0 / the x8 buffer, as Apple returns them).
+// Managed callbacks the plugins received are guest addresses, called with mk_guest_enter.
+#define _CRT_SECURE_NO_WARNINGS
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <direct.h>
+
+#include "win_rt.h"
+
+void mk_override_function(uint64_t off, void (*with)(cpu *), const char *what);  // win_rt.c
+
+#define P(i) ((const char *)(uintptr_t)X(i))
+static DWORD g_main_tid;
+static char g_save_dir[MAX_PATH];  // <game folder>\save
+
+static void call0(uint64_t fn) { if (fn) mk_guest_enter(fn, NULL, 0, NULL, 0, NULL); }
+static void calln(uint64_t fn, const uint64_t *x, int n) { if (fn) mk_guest_enter(fn, x, n, NULL, 0, NULL); }
+static double now_s(void) { return GetTickCount64() / 1000.0; }
+
+// ---- CloudKit: "iCloud" records as files in save\icloud ----
+// callback table order follows the C# EventHandlers struct (see loader/proxy/proxy.c)
+static struct { uint64_t account_status_changed, fetch_succeeded, fetch_failed, save_succeeded, save_requires_merge, save_failed; } g_ck;
+typedef struct ck_event { int kind; char *record; void *data; int len; double due; struct ck_event *next; } ck_event;
+static ck_event *g_ck_head, **g_ck_tail = &g_ck_head;
+static SRWLOCK g_ck_lock = SRWLOCK_INIT;
+
+static void ck_path(const char *record, char *out, size_t n) {
+    char safe[256];
+    size_t k = 0;
+    for (; record && record[k] && k < sizeof(safe) - 1; k++)
+        safe[k] = strchr("/\\:*?\"<>|", record[k]) ? '_' : record[k];
+    safe[k] = 0;
+    snprintf(out, n, "%s\\icloud\\%s.bin", g_save_dir, safe);
+}
+// Real CloudKit answers asynchronously and the game registers its completion handler only after
+// FetchRecord / SaveRecord return, so results are queued and delivered later from the main thread.
+static void ck_post(int kind, const char *record, void *data, int len) {
+    ck_event *e = calloc(1, sizeof(*e));
+    e->kind = kind; e->record = _strdup(record ? record : ""); e->data = data; e->len = len;
+    e->due = now_s() + 1.5;
+    AcquireSRWLockExclusive(&g_ck_lock);
+    *g_ck_tail = e; g_ck_tail = &e->next;
+    ReleaseSRWLockExclusive(&g_ck_lock);
+}
+static void ck_pump(void) {
+    for (;;) {
+        AcquireSRWLockExclusive(&g_ck_lock);
+        ck_event *e = g_ck_head;
+        if (e && e->due > now_s()) e = NULL;
+        else if (e) { g_ck_head = e->next; if (!g_ck_head) g_ck_tail = &g_ck_head; }
+        ReleaseSRWLockExclusive(&g_ck_lock);
+        if (!e) break;
+        uint64_t rec = (uint64_t)(uintptr_t)e->record, tag = (uint64_t)(uintptr_t)"local";
+        switch (e->kind) {
+        case 0: { uint64_t a[4] = { (uint64_t)(uintptr_t)e->data, (uint64_t)e->len, rec, tag }; calln(g_ck.fetch_succeeded, a, 4); break; }
+        case 1: { uint64_t a[4] = { rec, 11 /* CKErrorUnknownItem */, (uint64_t)(uintptr_t)"Record not found", rec }; calln(g_ck.fetch_failed, a, 4); break; }
+        case 2: { uint64_t a[2] = { rec, tag }; calln(g_ck.save_succeeded, a, 2); break; }
+        case 3: { uint64_t a[4] = { rec, 1, (uint64_t)(uintptr_t)"local write failed", rec }; calln(g_ck.save_failed, a, 4); break; }
+        }
+        free(e->data); free(e->record); free(e);
+    }
+}
+static void ck_initialize(cpu *c) {
+    memcpy(&g_ck, (const void *)(uintptr_t)X(0), sizeof(g_ck));
+    g_main_tid = GetCurrentThreadId();
+    char dir[MAX_PATH + 16];
+    snprintf(dir, sizeof(dir), "%s\\icloud", g_save_dir);
+    _mkdir(g_save_dir);
+    _mkdir(dir);
+    mk_log("CloudKit(local) initialize container=%s -> %s", X(1) ? P(1) : "(null)", dir);
+    call0(g_ck.account_status_changed);
+}
+static void ck_account_status(cpu *c) { RET(3); }  // CKAccountStatusNoAccount: the game keeps saves locally
+static void ck_get_auth_error(cpu *c) { RET(mk_strdup("")); }
+static void ck_noop(cpu *c) { (void)c; }
+static void ck_fetch_record(cpu *c) {
+    const char *record = P(0);
+    char path[MAX_PATH + 300];
+    ck_path(record, path, sizeof(path));
+    FILE *f = fopen(path, "rb");
+    if (!f) { mk_log("CloudKit(local) fetch %s: no record", record); ck_post(1, record, NULL, 0); return; }
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    void *buf = malloc(n > 0 ? n : 1);
+    n = (long)fread(buf, 1, n, f);
+    fclose(f);
+    mk_log("CloudKit(local) fetch %s: %ld bytes", record, n);
+    ck_post(0, record, buf, (int)n);
+}
+static void ck_save_record(cpu *c) {
+    const void *data = (const void *)(uintptr_t)X(0);
+    int len = (int)X(1);
+    const char *record = P(2);
+    char path[MAX_PATH + 300], tmp[MAX_PATH + 320];
+    ck_path(record, path, sizeof(path));
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    int ok = f && fwrite(data, 1, (size_t)len, f) == (size_t)len;
+    if (f) fclose(f);
+    ok = ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING);
+    mk_log("CloudKit(local) save %s: %d bytes %s", record, len, ok ? "ok" : "FAILED");
+    ck_post(ok ? 2 : 3, record, NULL, 0);
+}
+static void ck_show_alert(cpu *c) { mk_log("CloudKit(local) alert: %s / %s", X(0) ? P(0) : "", X(1) ? P(1) : ""); }
+
+// ---- Game Center: a signed-in local player; no matches on Windows yet ----
+static void gc_initialize(cpu *c) {
+    uint64_t on_auth = ((const uint64_t *)(uintptr_t)X(0))[0];  // OnAuthentication(bool ok, const char *error)
+    mk_log("GameCenter(local) initialize: reporting an authenticated player");
+    uint64_t a[2] = { 1, 0 };
+    calln(on_auth, a, 2);
+}
+static void gc_true(cpu *c) { RET(1); }
+static void gc_false(cpu *c) { RET(0); }
+static void gc_minus1(cpu *c) { RET(-1); }
+static void gc_local_player(cpu *c) {  // struct { const char *id, *name; } in x0 / x1
+    c->x[0] = (uint64_t)(uintptr_t)mk_strdup("G:0000000001");
+    c->x[1] = (uint64_t)(uintptr_t)mk_strdup("Player");
+}
+
+// ---- compass (MagneticHeading): none ----
+static void mh_float_m1(cpu *c) { c->v[0].u[0] = 0; c->v[0].u[1] = 0; c->v[0].f[0] = -1.0f; }
+static void mh_float_0(cpu *c) { c->v[0].u[0] = 0; c->v[0].u[1] = 0; }
+static void mh_vector(cpu *c) { for (int i = 0; i < 3; i++) { c->v[i].u[0] = 0; c->v[i].u[1] = 0; } }  // HFA in s0-s2
+
+// ---- AppleGameController: XInput pads; the keyboard drives pad 0 too ----
+typedef struct {  // AppleGameController.AppleController (blittable, 40 bytes)
+    uint8_t is_valid, is_micro, pad_[2];
+    float lx, ly, rx, ry, dx, dy;
+    uint8_t any, a, b, x, y, lb, lt, rb, rt, home, menu, options;
+} apple_controller;
+_Static_assert(sizeof(apple_controller) == 40, "AppleController");
+
+typedef struct { WORD buttons; BYTE lt, rt; SHORT lx, ly, rx, ry; } xi_gamepad;
+typedef struct { DWORD packet; xi_gamepad pad; } xi_state;
+static DWORD (WINAPI *g_xinput_get)(DWORD, xi_state *);
+static uint64_t g_agc_connected, g_agc_disconnected;
+static int g_agc_ready, g_agc_known, g_agc_slot[4];
+
+static int own_window_focused(void) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+    return pid == GetCurrentProcessId();
+}
+static int key(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+static float stick(SHORT v) { float f = v / 32767.0f; if (f < -1) f = -1; return (f > -0.24f && f < 0.24f) ? 0 : f; }
+
+// slot 0 = keyboard + XInput user 0 (always present), slots 1-3 = XInput users 1-3 when connected
+static unsigned agc_slots(void) {
+    unsigned m = 1;
+    xi_state s;
+    for (DWORD u = 1; g_xinput_get && u < 4; u++) if (g_xinput_get(u, &s) == 0) m |= 1u << u;
+    return m;
+}
+static apple_controller pad_state(int slot) {
+    apple_controller p;
+    memset(&p, 0, sizeof(p));
+    p.is_valid = 1;
+    xi_state s;
+    if (g_xinput_get && g_xinput_get((DWORD)slot, &s) == 0) {
+        WORD b = s.pad.buttons;
+        p.lx = stick(s.pad.lx); p.ly = stick(s.pad.ly); p.rx = stick(s.pad.rx); p.ry = stick(s.pad.ry);
+        p.dx = (b & 0x8 ? 1.0f : 0) - (b & 0x4 ? 1.0f : 0);
+        p.dy = (b & 0x1 ? 1.0f : 0) - (b & 0x2 ? 1.0f : 0);
+        p.a = !!(b & 0x1000); p.b = !!(b & 0x2000); p.x = !!(b & 0x4000); p.y = !!(b & 0x8000);
+        p.lb = !!(b & 0x100); p.rb = !!(b & 0x200); p.lt = s.pad.lt > 128; p.rt = s.pad.rt > 128;
+        p.menu = !!(b & 0x10); p.options = !!(b & 0x20);
+    }
+    if (slot == 0 && own_window_focused()) {
+        // arrows / WASD = left stick and d-pad, Enter / Space = A, Esc / Backspace = B, X = X, C = Y,
+        // Q / E = shoulders, 1 / 3 = triggers, Tab = options, P = menu
+        float kx = (key(VK_RIGHT) || key('D') ? 1.0f : 0) - (key(VK_LEFT) || key('A') ? 1.0f : 0);
+        float ky = (key(VK_UP) || key('W') ? 1.0f : 0) - (key(VK_DOWN) || key('S') ? 1.0f : 0);
+        if (kx) { p.lx = kx; p.dx = kx; }
+        if (ky) { p.ly = ky; p.dy = ky; }
+        p.a |= key(VK_RETURN) || key(VK_SPACE); p.b |= key(VK_ESCAPE) || key(VK_BACK);
+        p.x |= key('X'); p.y |= key('C'); p.lb |= key('Q'); p.rb |= key('E');
+        p.lt |= key('1'); p.rt |= key('3'); p.options |= key(VK_TAB); p.menu |= key('P');
+    }
+    p.any = p.a | p.b | p.x | p.y | p.lb | p.rb | p.lt | p.rt | p.menu | p.options;
+    return p;
+}
+static void agc_initialize(cpu *c) {
+    const uint64_t *h = (const uint64_t *)(uintptr_t)X(0);
+    g_agc_connected = h[0];
+    g_agc_disconnected = h[1];
+    g_main_tid = GetCurrentThreadId();
+    HMODULE x = LoadLibraryA("xinput1_4.dll");
+    if (!x) x = LoadLibraryA("xinput9_1_0.dll");
+    g_xinput_get = x ? (DWORD (WINAPI *)(DWORD, xi_state *))GetProcAddress(x, "XInputGetState") : NULL;
+    g_agc_ready = 1;
+    mk_log("AppleGameController(windows) initialize: XInput %s, keyboard on pad 0", g_xinput_get ? "found" : "missing");
+}
+static void agc_noop(cpu *c) { (void)c; }
+static void agc_count(cpu *c) { RET(g_agc_known); }
+static void agc_vendor(cpu *c) { RET(mk_strdup("Xbox Wireless Controller")); }
+static void agc_glyph(cpu *c) { RET(mk_strdup("")); }  // the game falls back to its generic icons
+static void agc_get(cpu *c) {  // 40-byte struct: Apple returns it through the x8 buffer
+    int i = (int)X(0);
+    apple_controller p;
+    if (i >= 0 && i < g_agc_known) p = pad_state(g_agc_slot[i]);
+    else memset(&p, 0, sizeof(p));
+    memcpy((void *)(uintptr_t)c->x[8], &p, sizeof(p));
+}
+// The game's controller index follows Apple's GCController.controllers: a compact list in connection
+// order; g_agc_slot maps it to our slots (like the Android proxy).
+static void agc_pump(void) {
+    static unsigned tick;
+    if (!g_agc_ready || (tick++ % 64)) return;
+    unsigned slots = agc_slots(), known = 0;
+    for (int i = 0; i < g_agc_known;) {
+        if (slots & (1u << g_agc_slot[i])) { known |= 1u << g_agc_slot[i]; i++; continue; }
+        mk_log("gamepad %d (slot %d) disconnected", i, g_agc_slot[i]);
+        memmove(&g_agc_slot[i], &g_agc_slot[i + 1], (size_t)(g_agc_known - i - 1) * sizeof(int));
+        g_agc_known--;
+        uint64_t a[3] = { 0, 1, (uint64_t)i };
+        calln(g_agc_disconnected, a, 3);
+    }
+    for (int s = 0; s < 4 && g_agc_known < 4; s++) {
+        if (!(slots & ~known & (1u << s))) continue;
+        int i = g_agc_known++;
+        g_agc_slot[i] = s;
+        mk_log("gamepad %d (slot %d) connected", i, s);
+        uint64_t a[3] = { 0, 1, (uint64_t)i };
+        calln(g_agc_connected, a, 3);
+    }
+}
+
+// main thread, from the engine's managed calls (il2cpp_runtime_invoke)
+void mk_plugins_pump(void) {
+    static int busy;
+    if (busy || !g_main_tid || GetCurrentThreadId() != g_main_tid) return;
+    busy = 1;
+    if (g_ck_head) ck_pump();
+    agc_pump();
+    busy = 0;
+}
+
+void mk_plugins_install(void) {
+    char exe[MAX_PATH];
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    char *slash = strrchr(exe, '\\');
+    if (slash) *slash = 0;
+    snprintf(g_save_dir, sizeof(g_save_dir), "%s\\save", exe);
+    static const struct { uint64_t off; void (*fn)(cpu *); const char *name; } fns[] = {
+        { 0x1fea9c, ck_initialize, "_CKInitialize" }, { 0x1fea08, ck_get_auth_error, "_GetAuthError" },
+        { 0x1feb38, ck_noop, "_CKShutdown" }, { 0x1feb80, ck_account_status, "_CKAccountStatus" },
+        { 0x1febd4, ck_fetch_record, "_CKFetchRecord" }, { 0x1fec44, ck_save_record, "_CKSaveRecord" },
+        { 0x1fecf4, ck_noop, "_CKReverseSaveRecord" }, { 0x1fed64, ck_show_alert, "_CKShowAlert" },
+        { 0x209a68, gc_initialize, "_GCInitialize" }, { 0x209af4, ck_noop, "_GCTimeoutInitialize" },
+        { 0x209b3c, ck_noop, "_GCShutdown" }, { 0x209be8, gc_true, "_GCIsAuthenticated" },
+        { 0x209ce0, gc_false, "_GCIsUnderage" }, { 0x209f64, gc_false, "_GCCanShowAccessPoint" },
+        { 0x20a0c0, gc_false, "_GCIsShowingDashboard" }, { 0x20a020, ck_noop, "_GCShowAccessPoint" },
+        { 0x20a070, ck_noop, "_GCSetAccessPointFocus" }, { 0x20a658, ck_noop, "_GCReportAchievement" },
+        { 0x209b84, gc_local_player, "_GCLocalPlayer" }, { 0x209c3c, gc_true, "_GCIsMultiplayerRestricted" },
+        { 0x209d84, ck_noop, "_GCLoadRecentPlayers" }, { 0x209dcc, gc_false, "_GCGetPlayersInMatch" },
+        { 0x209e20, ck_noop, "_GCStartSearchingForNearbyPlayers" }, { 0x209e68, ck_noop, "_GCStopSearchingForNearbyPlayers" },
+        { 0x209eb0, ck_noop, "_GCShowActivityViewController" }, { 0x20a114, ck_noop, "_GCDisplayDashboard" },
+        { 0x20a15c, ck_noop, "_GCShowMatchmaker" }, { 0x20a1d4, ck_noop, "_GCShowMatchmakerForInvite" },
+        { 0x20a21c, ck_noop, "_GCStartMatchmaking" }, { 0x20a294, ck_noop, "_GCStartEmptyMatch" },
+        { 0x20a2f4, ck_noop, "_GCAddPlayersToMatch" }, { 0x20a36c, ck_noop, "_GCCancelMatchmaking" },
+        { 0x20a3b4, ck_noop, "_GCFinishMatchmaking" }, { 0x20a3fc, ck_noop, "_GCAcceptMatchmakingInvite" },
+        { 0x20a444, ck_noop, "_GCDisconnectMatch" }, { 0x20a48c, ck_noop, "_GCSendMatchData" },
+        { 0x20a528, ck_noop, "_GCSendMatchDataToPlayers" }, { 0x20a6e8, ck_noop, "_GCLoadAchievements" },
+        { 0x20a730, ck_noop, "_GCResetAchievements" }, { 0x20a778, ck_noop, "_GCShowAchievements" },
+        { 0x20a7f0, ck_noop, "_GCLoadFriendPlayers" }, { 0x20a838, ck_noop, "_GCCancelInviteForPlayers" },
+        { 0x20a914, gc_minus1, "_GCGetStartingRoomNumber" },
+        { 0x20901c, ck_noop, "InstantiateFeedbackGenerators" }, { 0x2090f4, ck_noop, "ReleaseFeedbackGenerators" },
+        { 0x209150, ck_noop, "SelectionHaptic" }, { 0x209188, ck_noop, "SuccessHaptic" },
+        { 0x2091c4, ck_noop, "WarningHaptic" }, { 0x209200, ck_noop, "FailureHaptic" },
+        { 0x20923c, ck_noop, "LightImpactHaptic" }, { 0x209274, ck_noop, "MediumImpactHaptic" },
+        { 0x2092ac, ck_noop, "HeavyImpactHaptic" },
+        { 0x2092e4, ck_noop, "_MHStart" }, { 0x209338, ck_noop, "_MHStop" },
+        { 0x209380, gc_false, "_MHHeadingAvailable" }, { 0x2093d4, mh_float_m1, "_MHHeadingAccuracy" },
+        { 0x209430, mh_float_0, "_MHGetMagneticHeading" }, { 0x20948c, mh_vector, "_MHGetMagneticVector" },
+        { 0x20a9b4, agc_initialize, "_AGCInitialize" }, { 0x20aa04, agc_noop, "_AGCShutdown" },
+        { 0x20aa94, agc_noop, "_AGCPrintControllerStatus" }, { 0x20aa4c, agc_noop, "_AGCAdjustControllerPluginData" },
+        { 0x20aadc, agc_count, "_AGCGetTotalNumberOfControllers" }, { 0x20ab9c, agc_vendor, "_AGCGetVendorNameForController" },
+        { 0x20ab30, agc_glyph, "_AGCGetControllerGlyph" }, { 0x20abf8, agc_get, "_AGCGetController" },
+    };
+    for (size_t i = 0; i < sizeof(fns) / sizeof(fns[0]); i++) mk_override_function(fns[i].off, fns[i].fn, fns[i].name);
+    mk_log("plugins: %zu native functions replaced, saves in %s", sizeof(fns) / sizeof(fns[0]), g_save_dir);
+}

@@ -573,6 +573,9 @@ static void patch_player(void) {
     }
 }
 
+static void patch_fmod(void);
+void mk_plugins_install(void);  // plugins_win.c
+void mk_plugins_pump(void);
 static int g_started;
 void mk_runtime_start(void) {
     if (g_started) return;
@@ -580,6 +583,8 @@ void mk_runtime_start(void) {
     patch_player();
     load_image();
     mk_shims_init();
+    patch_fmod();
+    mk_plugins_install();
     char wd[16];
     if (GetEnvironmentVariableA("MK_WATCHDOG", wd, sizeof(wd))) CreateThread(NULL, 0, watchdog, (LPVOID)(uintptr_t)atoi(wd), 0, NULL);
     run_initializers();
@@ -624,6 +629,7 @@ static void log_invoke_exception(const void *m, void **exc) {
 }
 __declspec(dllexport) void *il2cpp_runtime_invoke(const void *m, void *obj, void **params, void **exc) {
     if (!m) { if (exc) *exc = NULL; return NULL; }
+    mk_plugins_pump();
     void *r = (void *)real_il2cpp_runtime_invoke((uintptr_t)m, (uintptr_t)obj, (uintptr_t)params, (uintptr_t)exc);
     log_invoke_exception(m, exc);
     return r;
@@ -653,11 +659,89 @@ __declspec(dllexport) void il2cpp_set_data_dir(const char *path) {
     mk_log("il2cpp_set_data_dir(%s)", path);
     real_il2cpp_set_data_dir((uintptr_t)path);
 }
+// ---- replacing a translated function ------------------------------------------------------------
+// Direct calls between translated functions do not go through dispatch, so a function is replaced by
+// writing `mov rax, imm64; jmp rax` over the start of its compiled code (in this DLL). The replacement
+// has the same shape, void f(cpu *).
+static void (*find_fn(uint64_t off))(cpu *);
+void mk_override_function(uint64_t off, void (*with)(cpu *), const char *what) {
+    uint8_t *f = (uint8_t *)find_fn(off);
+    if (!f) { mk_log("override %s: no translated function at %#llx", what, (unsigned long long)off); return; }
+    DWORD old;
+    VirtualProtect(f, 12, PAGE_EXECUTE_READWRITE, &old);
+    f[0] = 0x48; f[1] = 0xb8;
+    memcpy(f + 2, &with, 8);
+    f[10] = 0xff; f[11] = 0xe0;
+    VirtualProtect(f, 12, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), f, 12);
+    mk_log("override %s", what);
+}
+
+// FMOD: the iOS output (AudioUnit / AVAudioSession) does not exist here; start FMOD Studio with the
+// no-sound output so the game's audio calls succeed (the Android proxy does the same before
+// attaching its own output). FMOD_Studio_System_Initialize is `stp; mov; ldp; b <impl>`.
+static uint64_t g_fmod_init_impl, g_fmod_get_core, g_fmod_set_output;
+static void fmod_studio_initialize(cpu *c) {
+    uint64_t studio = c->x[0], args[5] = { c->x[0], c->x[1], c->x[2], c->x[3], c->x[4] };
+    uint64_t core = 0, x[2] = { studio, (uint64_t)(uintptr_t)&core };
+    uint64_t r1 = mk_guest_enter(g_fmod_get_core, x, 2, NULL, 0, NULL);
+    uint64_t r2 = ~0ull;
+    if (core) { uint64_t y[2] = { core, 2 /* FMOD_OUTPUTTYPE_NOSOUND */ }; r2 = mk_guest_enter(g_fmod_set_output, y, 2, NULL, 0, NULL); }
+    uint64_t r = mk_guest_enter(g_fmod_init_impl, args, 5, NULL, 0, NULL);
+    mk_log("FMOD Studio initialize with the no-sound output: core=%d setOutput=%d init=%d", (int)r1, (int)r2, (int)r);
+    c->x[0] = r;
+}
+static void patch_fmod(void) {
+    uint64_t init = mk_export("_FMOD_Studio_System_Initialize");
+    g_fmod_get_core = mk_export("_FMOD_Studio_System_GetCoreSystem");
+    g_fmod_set_output = mk_export("_FMOD5_System_SetOutput");
+    if (!init || !g_fmod_get_core || !g_fmod_set_output) { mk_log("FMOD exports not found"); return; }
+    const uint32_t *p = (const uint32_t *)(uintptr_t)init;
+    if (p[0] != 0xa9bf7bfd || (p[3] & 0xfc000000) != 0x14000000) { mk_log("FMOD_Studio_System_Initialize: unexpected code"); return; }
+    int32_t imm = (int32_t)(p[3] << 6) >> 6;
+    g_fmod_init_impl = (uint64_t)(uintptr_t)(p + 3) + (int64_t)imm * 4;
+    mk_override_function(init - IMG, fmod_studio_initialize, "FMOD_Studio_System_Initialize");
+}
+
+// ---- iOS-only icalls the Windows engine does not register (same values as the Android proxy) ----
+U il2cpp_string_new(U str);
+static int32_t icall_ios_generation(void) { return 10002; }  // DeviceGeneration.iPadUnknown
+static U icall_ios_system_version(void) { return il2cpp_string_new((U)"14.4"); }
+static void icall_noop(void) {}
+static int32_t icall_false(void) { return 0; }
+static int32_t icall_true(void) { return 1; }
+static U icall_null(void) { return 0; }
+static U icall_player_name(void) { return il2cpp_string_new((U)"Player"); }
+static U icall_player_id(void) { return il2cpp_string_new((U)"G:0000000000"); }
+static void register_ios_icalls(void) {
+#define GC "UnityEngine.SocialPlatforms.GameCenter.GameCenterPlatform::"
+    static const struct { const char *name; void *fn; } calls[] = {
+        { "UnityEngine.iOS.Device::get_generation", (void *)icall_ios_generation },
+        { "UnityEngine.iOS.Device::get_systemVersion", (void *)icall_ios_system_version },
+        { "UnityEngine.UnhandledExceptionHandler::iOSNativeUnhandledExceptionHandler", (void *)icall_noop },
+        { GC "Authenticate", (void *)icall_noop }, { GC "GetAuthenticated", (void *)icall_true },
+        { GC "Internal_UserName", (void *)icall_player_name }, { GC "Internal_UserID", (void *)icall_player_id },
+        { GC "Internal_UserGameID", (void *)icall_player_id }, { GC "Internal_LegacyUserID", (void *)icall_player_id },
+        { GC "GetIsUnderage", (void *)icall_false }, { GC "GetUserImage", (void *)icall_null },
+        { GC "LoadFriends", (void *)icall_noop }, { GC "InternalLoadAchievementDescriptions", (void *)icall_noop },
+        { GC "InternalLoadAchievements", (void *)icall_noop }, { GC "InternalReportProgress", (void *)icall_noop },
+        { GC "InternalReportScore", (void *)icall_noop }, { GC "InternalLoadScores", (void *)icall_noop },
+        { GC "Internal_ShowAchievementsUI", (void *)icall_noop }, { GC "Internal_ShowLeaderboardUI", (void *)icall_noop },
+        { GC "Internal_LoadUsers", (void *)icall_noop }, { GC "ResetAllAchievements", (void *)icall_noop },
+        { GC "ShowDefaultAchievementBanner", (void *)icall_noop }, { GC "ShowSpecificLeaderboardUI", (void *)icall_noop },
+    };
+#undef GC
+    for (size_t i = 0; i < sizeof(calls) / sizeof(calls[0]); i++)
+        real_il2cpp_add_internal_call((uintptr_t)calls[i].name, (uintptr_t)mk_host_callback(calls[i].fn, calls[i].name));
+    mk_log("registered %zu iOS-only icalls", sizeof(calls) / sizeof(calls[0]));
+}
+
 __declspec(dllexport) int il2cpp_init(const char *domain) {
     mk_runtime_start();
     mk_log("il2cpp_init(%s)", domain);
     g_traced = 0;
     int r = real_il2cpp_init((uintptr_t)domain);
     mk_log("il2cpp_init -> %d", r);
+    register_ios_icalls();
     return r;
 }

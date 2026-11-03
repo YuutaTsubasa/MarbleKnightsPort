@@ -201,7 +201,19 @@ SHIM(read) {
     }
     RET((int64_t)_read(I(0), P(1), (unsigned)X(2)));
 }
-SHIM(write) { RET((int64_t)_write(I(0), P(1), (unsigned)X(2))); }
+// A GUI process has no stdin / stdout / stderr: writes to 1 and 2 go to the log (Console.WriteLine,
+// Rewired's logger), and fstat reports a character device so System.Console can open them.
+SHIM(write) {
+    int64_t r = _write(I(0), P(1), (unsigned)X(2));
+    if (r < 0 && (I(0) == 1 || I(0) == 2)) {
+        const char *b = P(1);
+        int n = (int)X(2);
+        while (n > 0 && (b[n - 1] == '\n' || b[n - 1] == '\r')) n--;
+        if (n > 0) mk_log("%s: %.*s", I(0) == 1 ? "stdout" : "stderr", n > 2000 ? 2000 : n, b);
+        r = (int64_t)X(2);
+    }
+    RET(r);
+}
 SHIM(lseek) { RET(_lseeki64(I(0), (int64_t)X(1), I(2))); }
 SHIM(pread) {
     int64_t at = _telli64(I(0));
@@ -239,7 +251,7 @@ typedef struct {
 static void to_dstat(const struct _stat64 *s, dstat *d) {
     memset(d, 0, sizeof(*d));
     d->st_dev = (int32_t)s->st_dev;
-    d->st_mode = (uint16_t)((s->st_mode & _S_IFDIR) ? 0040000 | 0755 : 0100000 | 0644);
+    d->st_mode = (uint16_t)((s->st_mode & _S_IFDIR) ? 0040000 | 0755 : (s->st_mode & _S_IFCHR) ? 0020000 | 0666 : 0100000 | 0644);
     d->st_nlink = 1;
     d->st_atim.sec = s->st_atime;
     d->st_mtim.sec = s->st_mtime;
@@ -252,7 +264,13 @@ static void to_dstat(const struct _stat64 *s, dstat *d) {
 SHIM(stat) { struct _stat64 s; int r = _stat64(S(0), &s); if (!r) to_dstat(&s, P(1)); RET(r); }
 SHIM(lstat) { struct _stat64 s; int r = _stat64(S(0), &s); if (!r) to_dstat(&s, P(1)); RET(r); }
 SHIM(difftime) { RETD((double)(int64_t)X(0) - (double)(int64_t)X(1)); }
-SHIM(fstat) { struct _stat64 s; int r = _fstat64(I(0), &s); if (!r) to_dstat(&s, P(1)); RET(r); }
+SHIM(fstat) {
+    struct _stat64 s;
+    int r = _fstat64(I(0), &s);
+    if (r && I(0) >= 0 && I(0) <= 2) { memset(&s, 0, sizeof(s)); s.st_mode = _S_IFCHR; r = 0; }
+    if (!r) to_dstat(&s, P(1));
+    RET(r);
+}
 // Darwin dirent: { u64 ino, seekoff; u16 reclen, namlen; u8 type; char name[1024] }
 typedef struct { HANDLE h; int first; WIN32_FIND_DATAA fd; uint8_t ent[8 + 8 + 2 + 2 + 1 + 1024 + 3]; } ddir;
 SHIM(opendir) {

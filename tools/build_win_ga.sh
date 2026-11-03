@@ -32,7 +32,7 @@ if [ "${1:-}" != "--runtime-only" ]; then
   export LOCK_SESSION="${LOCK_SESSION:-marble-knights}" LOCK_MODEL="${LOCK_MODEL:-claude-opus-5-5}"
   "$ops/tools/lock/with-lock.sh" heavy-build 20 "Marble Knights recompiled GameAssembly.dll" --     bash -c "ls '$w/gen'/chunk_*.c | xargs -P $(nproc) -n 1 bash '$here/tools/win_cc.sh' --skip-fresh '' '$w/obj'"
 fi
-cc "$w/gen/fns.c" "$w/imports.c" "$w/api_wrappers.c" "$here/loader/win/win_rt.c" "$here/loader/win/darwin_win.c" "$here/loader/win/darwin_win_sys.c" "$here/loader/win/darwin_win_cxx.c" "$here/loader/win/darwin_win_libcxx.c" "$here/loader/win/darwin_win_cf.c"
+cc "$w/gen/fns.c" "$w/imports.c" "$w/api_wrappers.c" "$here/loader/win/win_rt.c" "$here/loader/win/darwin_win.c" "$here/loader/win/darwin_win_sys.c" "$here/loader/win/darwin_win_cxx.c" "$here/loader/win/darwin_win_libcxx.c" "$here/loader/win/darwin_win_cf.c" "$here/loader/win/plugins_win.c"
 MSYS_NO_PATHCONV=1 "$llvm/clang.exe" --target=x86_64-pc-windows-msvc -c "$(cygpath -w "$here/loader/win/win_call.S")" -o "$(cygpath -w "$w/obj/win_call.obj")"
 objs=()
 for o in "$w/obj"/*.obj; do objs+=("$(cygpath -w "$o")"); done

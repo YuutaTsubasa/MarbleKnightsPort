@@ -100,3 +100,18 @@ Android 版本來就是跑 iOS 自己的 IL2CPP 執行環境（在 `__text` 裡�
 診斷工具：`MK_TRACE_THROW=1`（每次 throw 的訊息和堆疊位址，用 llvm-symbolizer 對 PDB 解）、`il2cpp_runtime_invoke` 回傳例外時記錄方法名稱。
 
 還沒驗證：背景（Android 標題畫面是藍色格子背景，這裡是黑的）、輸入、聲音（FMOD）、存檔、效能（CPU 約一個核心）、GC 掃描。
+
+## Windows：進到遊戲（同一天）
+
+開場故事圖正常顯示，按 Enter（鍵盤模擬手把 A）就進到教學的第一個對話框（「Welcome to Marble Knights. Let's have a quick lesson.」，手把焦點在 Continue）。新存檔會先跑教學，所以還沒看到主選單本身。
+
+這一段修掉／補上的：
+- **轉換器補齊 NEON**：整份映像沒轉的指令從 2,518 降到 92（剩下多半是 `udf`，本來就是陷阱）。補了純量 pairwise（`faddp s, v.2s` 等）、post-index 的 `ld1`／`ld1r`、多暫存器單 lane 的 `ld2..4`／`st2..4`、向量立即值 `orr`／`bic`、`fcvtn`／`fcvtl`（含 f16）、向量整數↔浮點（含定點）、整數 pairwise min/max、飽和加減、`sqdmulh`、`srshr`、`rev16/32/64`、窄化家族（`addhn`、`xtn`、`shrn` 與飽和／捨入版）、加寬家族（`saddw`、`uaddl`、`ushll`、`sxtl`…）、`fcvtzu w, s, #fbits`、無號的 `fcvtmu`／`fcvtpu` 等。capstone 把大於 9 的 lane 印成十六進位（`v0.b[0xf]`），先轉成十進位。
+- `a64toc.py --all` 只重寫內容有變的 chunk，之後小修只重編幾個 chunk（這次 4 個，約 2 分鐘）。
+- **原生外掛替代**（`loader/win/plugins_win.c`，用 `mk_override_function` 蓋掉轉好的函式，位址跟 Android 版相同）：CloudKit 存成遊戲資料夾的 `save\icloud\*.bin`（結果延遲 1.5 秒、在主執行緒送回）；Game Center 回報已登入的本機玩家，Windows 還沒有區網配對，所以 `IsMultiplayerRestricted` 回 1；AppleGameController 用 XInput，鍵盤也接到 0 號手把（方向鍵／WASD、Enter／空白＝A、Esc／Backspace＝B、X、C＝Y、Q／E 肩鍵、1／3 扳機、Tab、P）；觸覺回饋與指南針不做事。回呼在 `il2cpp_runtime_invoke` 進入時於主執行緒處理。
+- **Rewired 初始化失敗的原因**：Rewired 記錄一則錯誤時，`System.Console` 的靜態建構子要開 stdout，但 GUI 程式沒有 fd 0–2（`_fstat64` 失敗 →「Invalid handle to path …/[Unknown]」），整個 `InputManager_Base.Initialize` 跟著失敗，後面 `CustomController`、`CustomTiltControl` 等一連串 NullReference。現在 fd 0–2 的 `fstat` 回報字元裝置，寫到 1／2 的文字進 `mk_ga.log`。
+- FMOD Studio 用 NOSOUND 輸出啟動成功（還沒有聲音）。
+
+Rewired 會印「ControllerDataFiles is missing critical data!」，要和 Android 版的 log 比對是不是本來就有。
+
+還沒驗證：主選單之後的流程、實際關卡、XInput 手把（只測了鍵盤）、聲音、存檔讀回、效能、GC 掃描。
