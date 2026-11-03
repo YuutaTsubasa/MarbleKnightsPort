@@ -258,6 +258,7 @@ static void watch_pause(const void *m, void **params) {
             frames = 0;
             t_last = t;
             if (g_debug) mk_tilt_debug();
+            { void mk_rc_report(void); mk_rc_report(); }
         }
         return;
     }
@@ -504,7 +505,7 @@ static void redirect_image_function(uintptr_t off, void *target, const char *wha
     *(uint64_t *)(at + 2) = (uint64_t)(uintptr_t)target;
     mprotect(page, 2 * pg, PROT_READ | PROT_EXEC);
     __builtin___clear_cache((char *)at, (char *)(at + 4));
-    LOG("redirected %s", what);
+    if (what) LOG("redirected %s", what);
 }
 
 // FMOD: iOS output goes through AudioUnit/AVAudioSession, which we don't provide yet.
@@ -534,6 +535,7 @@ static void patch_image(void) {
     patch_agc();
     for (const mk_native *n = mk_haptic_natives; n->name; n++) redirect_image_function(n->off, n->fn, n->name);
     for (const mk_native *n = mk_tilt_natives; n->name; n++) redirect_image_function(n->off, n->fn, n->name);
+    { int mk_rc_install(uint8_t *, void (*)(uintptr_t, void *, const char *)); mk_rc_install(g_img.base, redirect_image_function); }
     // FMOD_Studio_System_Initialize: stp/mov/ldp/b <impl> (UnityFramework 2.3.1)
     uintptr_t off = (uintptr_t)mk_export(&g_img, "_FMOD_Studio_System_Initialize") - (uintptr_t)g_img.base;
     uint32_t *p = (uint32_t *)(g_img.base + off);

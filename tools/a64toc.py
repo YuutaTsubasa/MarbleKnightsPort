@@ -9,9 +9,13 @@ through dispatch(). Unsupported instructions are counted (coverage) and emitted 
 Output is generated from the game and stays in work/recomp (never in Git).
 usage: python -E tools/a64toc.py --coverage            all functions in the il2cpp section
        python -E tools/a64toc.py <hex addr> [...]       write work/recomp/sample.c for these functions
+       python -E tools/a64toc.py --random N             same for N random functions (compile test)
+       python -E tools/a64toc.py --batch REGEX [N]      work/recomp/batch.c: methods matching REGEX, for the
+                                                       Android validation harness (loader/proxy/recomp_rt.c)
 (needs capstone; run from a neutral cwd)
 """
 import bisect
+import re
 import collections
 import os
 import sys
@@ -156,17 +160,345 @@ class Fn:
         if self.start <= t < self.end:
             self.labels.add(t)
             return f"goto L_{t:x};"
-        return f"TAILCALL({t:#x}); return;"
+        if t in self.funcs:
+            return f"f_{t:x}(c); return;"
+        return f"host_call(c, IMG + {t:#x}ull); return;"
 
     def call(self, t):
         if t in self.funcs:
             return f"c->x[30] = 0; f_{t:x}(c);"
-        return f"host_call(c, {t:#x});"
+        return f"host_call(c, IMG + {t:#x}ull);"
+
+    # ---- SIMD / FP-register forms (parsed from the operand text) ----
+    VEC_RE = re.compile(r"^v(\d+)\.(\d+)?([bhsd])$")
+    LANE_RE = re.compile(r"^v(\d+)\.([bhsd])\[(\d+)\]$")
+    LANE_T = {"b": ("b", "uint8_t", 8), "h": ("h", "uint16_t", 16), "s": ("w", "uint32_t", 32), "d": ("u", "uint64_t", 64)}
+
+    @staticmethod
+    def split_ops(s):
+        out, depth, cur = [], 0, ""
+        for ch in s:
+            if ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth -= 1
+            if ch == "," and depth == 0:
+                out.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+        if cur.strip():
+            out.append(cur.strip())
+        return out
+
+    def is_vec_form(self, i):
+        s = i.op_str
+        if re.search(r"\bv\d+\.", s):
+            return True
+        t = self.split_ops(s)
+        if not t:
+            return False
+        if i.mnemonic in ("scvtf", "ucvtf") and len(t) == 2 and t[1][0] in "sd":
+            return True
+        if i.mnemonic in ("fabd", "frintm", "frintp", "frintz", "frinta", "frintn", "frintx", "frinti", "fccmp", "fccmpe"):
+            return True
+        if i.mnemonic in ("neg", "extr", "rev16", "negs"):
+            return True
+        if i.mnemonic == "movi" or i.mnemonic == "mvni":
+            return True
+        if i.mnemonic == "ldr" and t[0][0] in "bhdq" and (t[0][1:].isdigit()):
+            return t[0][0] in "bh" or not t[1].startswith("[")
+        if i.mnemonic == "fcvtzs" and len(t) == 3:
+            return True
+        return False
+
+    def vimm(self, t, rest):
+        v = int(t.lstrip("#"), 0)
+        for r in rest:
+            if r.startswith("lsl"):
+                v <<= int(r.split("#")[1], 0)
+            elif r.startswith("msl"):
+                sh = int(r.split("#")[1], 0)
+                v = (v << sh) | ((1 << sh) - 1)
+        return v
+
+    def vec(self, i):
+        mn = i.mnemonic
+        t = self.split_ops(i.op_str)
+        cc = getattr(i, "cc", 0)
+
+        def vreg(tok):
+            m = self.VEC_RE.match(tok)
+            if not m:
+                raise Unsupported(f"vtok {tok}")
+            n, cnt, el = int(m.group(1)), m.group(2), m.group(3)
+            bits = {"b": 8, "h": 16, "s": 32, "d": 64}[el]
+            cnt = int(cnt) if cnt else 128 // bits
+            return n, cnt, el
+
+        def lanes(n, el):
+            fld, ty, bits = self.LANE_T[el]
+            return f"c->v[{n}].{fld}", ty, bits
+
+        def clear_hi(n, cnt, el):
+            bits = {"b": 8, "h": 16, "s": 32, "d": 64}[el]
+            return f" c->v[{n}].u[1] = 0;" if cnt * bits == 64 else ""
+
+        def lane_or_vec(tok):
+            m = self.LANE_RE.match(tok)
+            if m:
+                return ("lane", int(m.group(1)), m.group(2), int(m.group(3)))
+            return ("vec",) + vreg(tok)
+
+        S = lambda tok: tok[0] in "sd" and tok[1:].isdigit()  # noqa: E731
+        sreg = lambda tok: (f"c->v[{int(tok[1:])}].f[0]", "float") if tok[0] == "s" else (f"c->v[{int(tok[1:])}].d[0]", "double")  # noqa: E731
+        zero_rest = lambda tok: f"c->v[{int(tok[1:])}].u[1] = 0;" + (" c->v[%d].w[1] = 0;" % int(tok[1:]) if tok[0] == "s" else "")  # noqa: E731
+
+        if mn == "mov" and len(t) == 2:
+            a, b = lane_or_vec(t[0]) if t[0].startswith("v") else None, lane_or_vec(t[1]) if t[1].startswith("v") else None
+            if a and b and a[0] == "vec" and b[0] == "vec":
+                self.emit(f"c->v[{a[1]}] = c->v[{b[1]}];" + clear_hi(a[1], a[2], a[3]))
+                return
+            if a and b and a[0] == "lane" and b[0] == "lane":
+                fa, ty, _ = lanes(a[1], a[2])
+                fb, _, _ = lanes(b[1], b[2])
+                self.emit(f"{fa}[{a[3]}] = {fb}[{b[3]}];")
+                return
+            if b and b[0] == "lane" and not t[0].startswith("v"):  # mov sN, vM.s[k] / mov wN, vM.s[k] (umov)
+                fb, ty, bits = lanes(b[1], b[2])
+                if t[0][0] in "sd":
+                    n = int(t[0][1:])
+                    self.emit(f"{{ {ty} _x = {fb}[{b[3]}]; c->v[{n}].u[0] = 0; c->v[{n}].u[1] = 0; c->v[{n}].{self.LANE_T[b[2]][0]}[0] = _x; }}")
+                else:
+                    self.emit(self.setreg_tok(t[0], f"{fb}[{b[3]}]"))
+                return
+            if a and a[0] == "lane" and not t[1].startswith("v"):  # mov vN.s[k], wM (ins)
+                fa, ty, _ = lanes(a[1], a[2])
+                self.emit(f"{fa}[{a[3]}] = ({ty}){self.reg_tok(t[1])};")
+                return
+            raise Unsupported("vmov")
+        if mn in ("movi", "mvni", "fmov") and len(t) >= 2 and t[1].startswith("#"):
+            if mn == "fmov":
+                n, cnt, el = vreg(t[0])
+                ty = "float" if el == "s" else "double"
+                fld = "f" if el == "s" else "d"
+                self.emit("".join(f"c->v[{n}].{fld}[{k}] = ({ty}){t[1][1:]};" for k in range(cnt)) + clear_hi(n, cnt, el))
+                return
+            v = self.vimm(t[1], t[2:])
+            if t[0][0] == "d":
+                n = int(t[0][1:])
+                self.emit(f"c->v[{n}].u[0] = {v & 0xffffffffffffffff:#x}ull; c->v[{n}].u[1] = 0;")
+                return
+            n, cnt, el = vreg(t[0])
+            fld, ty, bits = self.LANE_T[el]
+            if mn == "mvni":
+                v = ~v
+            v &= (1 << bits) - 1
+            self.emit("".join(f"c->v[{n}].{fld}[{k}] = ({ty}){v:#x}ull;" for k in range(cnt)) + clear_hi(n, cnt, el))
+            return
+        if mn in ("neg", "negs") and len(t) >= 2 and t[0][0] in "wx":
+            ops = i.operands
+            w = t[0][0] == "w"
+            y = self.operand2(ops[1], w)
+            if mn == "neg":
+                self.emit(self.setreg(ops[0].reg, f"-({y})"))
+            else:
+                self.flags_add("0", y, ops[0].reg, w, True)
+            return
+        if mn == "extr":
+            ops = i.operands
+            w = t[0][0] == "w"
+            bits = 32 if w else 64
+            lsb = ops[3].imm
+            x, y = self.reg(ops[1].reg), self.reg(ops[2].reg)
+            e = f"(uint{bits}_t)(((uint{bits}_t)({y}) >> {lsb}) | ((uint{bits}_t)({x}) << ({bits} - {lsb})))" if lsb else f"(uint{bits}_t)({y})"
+            self.emit(self.setreg(ops[0].reg, e))
+            return
+        if mn == "rev16" and t[0][0] in "wx":
+            ops = i.operands
+            x = self.reg(ops[1].reg)
+            m = 0x00ff00ff00ff00ff
+            self.emit(self.setreg(ops[0].reg, f"((({x}) >> 8) & {m:#x}ull) | ((({x}) & {m:#x}ull) << 8)"))
+            return
+        if mn == "ldr" and t[0][0] in "bhd" and t[0][1:].isdigit():
+            n = int(t[0][1:])
+            if not t[1].startswith("["):
+                lit = int(t[1].lstrip("#"), 0)
+                self.emit(f"c->v[{n}].u[0] = *(uint64_t *)(IMG + {lit:#x}ull); c->v[{n}].u[1] = 0;")
+                return
+            memop = next(o for o in i.operands if o.type == A.ARM64_OP_MEM)
+            if i.writeback or len(i.operands) > 2:
+                raise Unsupported("ldr b/h wb")
+            a, _ = self.addr(i, memop)
+            ty = "uint8_t" if t[0][0] == "b" else "uint16_t"
+            self.emit(f"c->v[{n}].u[0] = *({ty} *)({a}); c->v[{n}].u[1] = 0;")
+            return
+        # scalar FP forms
+        if len(t) >= 2 and S(t[0]) and S(t[1]) and not any(x.startswith("v") for x in t):
+            d, ty = sreg(t[0])
+            x, _ = sreg(t[1])
+            fx = "f" if ty == "float" else ""
+            n = int(t[0][1:])
+            if mn in ("scvtf", "ucvtf"):
+                it = ("int32_t" if mn == "scvtf" else "uint32_t") if ty == "float" else ("int64_t" if mn == "scvtf" else "uint64_t")
+                src = f"c->v[{int(t[1][1:])}].{'w' if ty == 'float' else 'u'}[0]"
+                self.emit(f"{{ {ty} _r = ({ty})({it}){src}; c->v[{n}].u[0] = 0; c->v[{n}].u[1] = 0; {d} = _r; }}")
+                return
+            if mn == "fabd":
+                y, _ = sreg(t[2])
+                self.emit(f"{{ {ty} _r = fabs{fx}({x} - {y}); c->v[{n}].u[0] = 0; c->v[{n}].u[1] = 0; {d} = _r; }}")
+                return
+            if mn.startswith("frint"):
+                f = {"frintm": "floor", "frintp": "ceil", "frintz": "trunc", "frinta": "round", "frintn": "nearbyint",
+                     "frintx": "rint", "frinti": "nearbyint"}[mn] + fx
+                self.emit(f"{{ {ty} _r = {f}({x}); c->v[{n}].u[0] = 0; c->v[{n}].u[1] = 0; {d} = _r; }}")
+                return
+            if mn in ("fccmp", "fccmpe"):
+                y, _ = sreg(t[1])
+                x0, _ = sreg(t[0])
+                nzcv = int(t[2].lstrip("#"), 0)
+                self.emit(f"if ({COND[cc]}) fcmp_flags(c, {x0}, {y}); else {{ N = {(nzcv >> 3) & 1}; Z = {(nzcv >> 2) & 1}; C = {(nzcv >> 1) & 1}; V = {nzcv & 1}; }}")
+                return
+        if mn == "fcvtzs" and len(t) == 3 and t[0][0] in "wx" and S(t[1]):
+            x, ty = sreg(t[1])
+            fb = int(t[2].lstrip("#"), 0)
+            self.emit(self.setreg_tok(t[0], f"cvt_zs{32 if t[0][0] == 'w' else 64}((double){x} * {float(1 << fb)!r})"))
+            return
+        if mn == "addv" and S(t[0]):
+            n, cnt, el = vreg(t[1])
+            fld, ty, _ = self.LANE_T[el]
+            self.emit(f"{{ {ty} _s = 0; for (int k = 0; k < {cnt}; k++) _s += c->v[{n}].{fld}[k]; c->v[{int(t[0][1:])}].u[0] = 0; c->v[{int(t[0][1:])}].u[1] = 0; c->v[{int(t[0][1:])}].{fld}[0] = _s; }}")
+            return
+        if mn == "dup" and len(t) == 2:
+            n, cnt, el = vreg(t[0])
+            fld, ty, _ = self.LANE_T[el]
+            src = lane_or_vec(t[1]) if t[1].startswith("v") else None
+            val = f"{lanes(src[1], src[2])[0]}[{src[3]}]" if src else f"({ty}){self.reg_tok(t[1])}"
+            self.emit(f"{{ {ty} _x = {val}; for (int k = 0; k < {cnt}; k++) c->v[{n}].{fld}[k] = _x; }}" + clear_hi(n, cnt, el))
+            return
+        if mn == "ld1r":
+            n, cnt, el = vreg(t[0].strip("{}"))
+            fld, ty, _ = self.LANE_T[el]
+            memop = next(o for o in i.operands if o.type == A.ARM64_OP_MEM)
+            if i.writeback:
+                raise Unsupported("ld1r wb")
+            a, _ = self.addr(i, memop)
+            self.emit(f"{{ {ty} _x = *({ty} *)({a}); for (int k = 0; k < {cnt}; k++) c->v[{n}].{fld}[k] = _x; }}" + clear_hi(n, cnt, el))
+            return
+        if mn == "ld1" and t[0].startswith("{") and "[" in t[0]:
+            m = re.match(r"\{v(\d+)\.([bhsd])\}\[(\d+)\]", t[0])
+            if not m or i.writeback:
+                raise Unsupported("ld1 form")
+            n, el, k = int(m.group(1)), m.group(2), int(m.group(3))
+            fld, ty, _ = self.LANE_T[el]
+            memop = next(o for o in i.operands if o.type == A.ARM64_OP_MEM)
+            a, _ = self.addr(i, memop)
+            self.emit(f"c->v[{n}].{fld}[{k}] = *({ty} *)({a});")
+            return
+        # element-wise vector arithmetic
+        VB = {"add": "+", "sub": "-", "mul": "*", "and": "&", "orr": "|", "eor": "^"}
+        VF = {"fadd": "+", "fsub": "-", "fmul": "*", "fdiv": "/"}
+        if (mn in VB or mn in VF) and len(t) == 3 and t[0].startswith("v"):
+            n, cnt, el = vreg(t[0])
+            a = vreg(t[1])
+            if mn in VF:
+                fld = "f" if el == "s" else "d"
+                ty = "float" if el == "s" else "double"
+                op = VF[mn]
+            else:
+                fld, ty, _ = self.LANE_T[el] if mn in ("add", "sub", "mul") else ("u", "uint64_t", 64)
+                if mn in ("and", "orr", "eor"):
+                    cnt = 1 if cnt * {"b": 8, "h": 16, "s": 32, "d": 64}[el] == 64 else 2
+                    el = "d"
+                op = VB[mn]
+            bl = lane_or_vec(t[2])
+            if bl[0] == "lane":
+                bf, _, _ = lanes(bl[1], bl[2])
+                bexpr = lambda k: f"_b{bl[3]}"  # noqa: E731
+                pre = f"{ty} _b{bl[3]} = c->v[{bl[1]}].{'f' if ty == 'float' else 'd' if ty == 'double' else self.LANE_T[bl[2]][0]}[{bl[3]}]; "
+            else:
+                bexpr = lambda k: f"_s.{fld}[{k}]"  # noqa: E731
+                pre = f"vreg _s = c->v[{bl[1]}]; "
+            body = "".join(f"c->v[{n}].{fld}[{k}] = ({ty})(_a.{fld}[{k}] {op} {bexpr(k)}); " for k in range(cnt))
+            self.emit(f"{{ vreg _a = c->v[{a[0]}]; {pre}{body}}}" + clear_hi(n, cnt, el if mn not in ("and", "orr", "eor") else "d"))
+            return
+        if mn in ("fneg", "fabs") and len(t) == 2 and t[0].startswith("v"):
+            n, cnt, el = vreg(t[0])
+            m_ = vreg(t[1])[0]
+            fld = "f" if el == "s" else "d"
+            fx = "f" if el == "s" else ""
+            e = (lambda k: f"-c->v[{m_}].{fld}[{k}]") if mn == "fneg" else (lambda k: f"fabs{fx}(c->v[{m_}].{fld}[{k}])")
+            self.emit("".join(f"c->v[{n}].{fld}[{k}] = {e(k)}; " for k in range(cnt)) + clear_hi(n, cnt, el))
+            return
+        if mn in ("scvtf", "ucvtf", "fcvtzs") and len(t) == 2 and t[0].startswith("v"):
+            n, cnt, el = vreg(t[0])
+            m_ = vreg(t[1])[0]
+            if el != "s":
+                raise Unsupported("vcvt d")
+            if mn == "fcvtzs":
+                self.emit("".join(f"c->v[{n}].w[{k}] = cvt_zs32(c->v[{m_}].f[{k}]); " for k in range(cnt)) + clear_hi(n, cnt, el))
+            else:
+                it = "int32_t" if mn == "scvtf" else "uint32_t"
+                self.emit(f"{{ vreg _a = c->v[{m_}]; " + "".join(f"c->v[{n}].f[{k}] = (float)({it})_a.w[{k}]; " for k in range(cnt)) + "}" + clear_hi(n, cnt, el))
+            return
+        if mn == "rev64" and len(t) == 2:
+            n, cnt, el = vreg(t[0])
+            m_ = vreg(t[1])[0]
+            if el != "s":
+                raise Unsupported("rev64 el")
+            self.emit(f"{{ vreg _a = c->v[{m_}]; " + "".join(f"c->v[{n}].w[{k}] = _a.w[{k ^ 1}]; " for k in range(cnt)) + "}" + clear_hi(n, cnt, el))
+            return
+        if mn == "ext" and len(t) == 4:
+            n, cnt, el = vreg(t[0])
+            a, b = vreg(t[1])[0], vreg(t[2])[0]
+            k = int(t[3].lstrip("#"), 0)
+            nb = cnt  # bytes (16b or 8b)
+            self.emit(f"{{ uint8_t _t[32]; memcpy(_t, &c->v[{a}], 16); memcpy(_t + {nb}, &c->v[{b}], 16); vreg _r = {{ {{ 0, 0 }} }}; memcpy(&_r, _t + {k}, {nb}); c->v[{n}] = _r; }}")
+            return
+        if mn in ("uzp1", "uzp2", "zip1", "zip2") and len(t) == 3:
+            n, cnt, el = vreg(t[0])
+            a, b = vreg(t[1])[0], vreg(t[2])[0]
+            fld, ty, _ = self.LANE_T[el]
+            src = []
+            for k in range(cnt):
+                if mn.startswith("uzp"):
+                    idx = 2 * k + (mn == "uzp2")
+                    src.append((a, idx) if idx < cnt else (b, idx - cnt))
+                else:
+                    base = 0 if mn == "zip1" else cnt // 2
+                    src.append((a, base + k // 2) if k % 2 == 0 else (b, base + k // 2))
+            self.emit(f"{{ vreg _a = c->v[{a}], _b = c->v[{b}]; " + "".join(
+                f"c->v[{n}].{fld}[{k}] = {'_a' if s == a else '_b'}.{fld}[{j}]; " for k, (s, j) in enumerate(src)) + "}" + clear_hi(n, cnt, el))
+            return
+        if mn == "ushll" and len(t) == 3:
+            n, cnt, el = vreg(t[0])
+            m_, _, sel = vreg(t[1])
+            sh = int(t[2].lstrip("#"), 0)
+            if el != "d" or sel != "s":
+                raise Unsupported("ushll form")
+            self.emit(f"{{ vreg _a = c->v[{m_}]; c->v[{n}].u[0] = (uint64_t)_a.w[0] << {sh}; c->v[{n}].u[1] = (uint64_t)_a.w[1] << {sh}; }}")
+            return
+        raise Unsupported(f"v{mn}")
+
+    def reg_tok(self, tok):
+        if tok in ("xzr", "wzr"):
+            return "0ull"
+        n = int(tok[1:])
+        return f"c->x[{n}]" if tok[0] == "x" else f"(uint32_t)c->x[{n}]"
+
+    def setreg_tok(self, tok, expr):
+        if tok in ("xzr", "wzr"):
+            return f"(void)({expr});"
+        n = int(tok[1:])
+        return f"c->x[{n}] = (uint64_t)({expr});" if tok[0] == "x" else f"c->x[{n}] = (uint32_t)({expr});"
 
     def ins_c(self, i):
         mn, ops = i.mnemonic, i.operands
         cc = getattr(i, "cc", 0)
         if mn == "nop" or mn.startswith(("prfm", "dmb", "dsb", "isb", "hint")):
+            return
+        if self.is_vec_form(i):
+            self.vec(i)
             return
         if mn in ("b", "bl") and ops[0].type == A.ARM64_OP_IMM and cc in (0, A.ARM64_CC_AL, A.ARM64_CC_INVALID):
             t = ops[0].imm
@@ -508,27 +840,19 @@ class Fn:
             out.append("local_jump:")
             out.append("    switch (c->jt) {")
             out += [f"    case {a:#x}: goto L_{a:x};" for a in sorted(self.labels)]
-            out.append(f"    default: TAILCALL(c->jt); return;\n    }}")
+            out.append("    default: dispatch(c, c->jt); return;\n    }")
         out.append("}")
         return "\n".join(out)
 
 
 PRELUDE = r"""// generated by tools/a64toc.py from UnityFramework (game code): do not commit
 #include <math.h>
-#include <stdint.h>
 #include <string.h>
-typedef union { uint64_t u[2]; uint32_t w[4]; float f[4]; double d[2]; } vreg;
-typedef struct cpu { uint64_t x[32]; uint8_t n, z, cf, vf; vreg v[32]; uint64_t jt; } cpu;  // x[31] = sp
-extern uint64_t IMG;  // where the image's segments are mapped
-void host_call(cpu *c, uint64_t guest_addr);
-void dispatch(cpu *c, uint64_t target);
-void trap(cpu *c, uint64_t pc);
-void fcmp_flags(cpu *c, double a, double b);
+#include "recomp_rt.h"  // cpu, vreg, IMG, host_call, dispatch, trap, fcmp_flags
 #define N c->n
 #define Z c->z
 #define C c->cf
 #define V c->vf
-#define TAILCALL(t) dispatch(c, (t))
 #define LOCAL_JUMP(t) do { c->jt = (t); goto local_jump; } while (0)
 #define UNSUPPORTED(pc) trap(c, (pc))
 static inline uint32_t ror32(uint32_t x, unsigned s) { return (x >> s) | (x << ((32 - s) & 31)); }
@@ -562,9 +886,50 @@ def load():
     return m, sec, starts, md
 
 
-def functions(m, sec, starts, md, which=None):
+def write_batch(m, sec, starts, md, pattern, limit):
+    """work/recomp/batch.c: translated functions whose method name matches `pattern`, with entry
+    thunks and the table loader/proxy/recomp_rt.c installs (validation on the Android build)."""
+    import recomp_survey
+    names = {}
+    for line in open(os.path.join(ROOT, "work", "an", "methods.txt"), encoding="utf-8", errors="replace"):
+        a, _, n = line.strip().partition(" ")
+        try:
+            names.setdefault(int(a, 16), n)
+        except ValueError:
+            pass
+    lsda = recomp_survey.lsda_functions(m)
+    rx = re.compile(pattern)
+    cand = [a for a in starts if a in names and rx.search(names[a]) and a not in lsda]
+    picked = []
+    for f in functions(m, sec, starts, md, set(cand), funcs=set(cand)):
+        if len(f.ins) < 4 or f.translate():  # too short to redirect (16 bytes), or not fully translated
+            continue
+        picked.append(f)
+        if len(picked) >= limit:
+            break
+    batch = {f.start for f in picked}
+    for f in picked:  # translate again with calls between batch members made direct
+        f.funcs = batch
+        f.body, f.labels = [], set()
+        f.translate()
+    parts = [PRELUDE]
+    parts += [f"void f_{f.start:x}(cpu *c);" for f in picked]
+    parts += [f.c_source() for f in picked]
+    for k, f in enumerate(picked):
+        parts.append(f'__attribute__((naked)) static void t_{f.start:x}(void) {{ __asm__("adrp x16, f_{f.start:x}\\n'
+                     f'add x16, x16, :lo12:f_{f.start:x}\\nmov x17, #{k}\\nb mk_rc_enter"); }}  // {names[f.start]}')
+    parts.append("const mk_rc_entry mk_rc_batch[] = {\n" + "\n".join(f"    {{ {f.start:#x}, f_{f.start:x}, t_{f.start:x} }}," for f in picked) + "\n};")
+    parts.append(f"const int mk_rc_batch_count = {len(picked)};")
+    os.makedirs(OUT, exist_ok=True)
+    path = os.path.join(OUT, "batch.c")
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n\n".join(parts) + "\n")
+    print(f"wrote {path}: {len(picked)} functions (of {len(cand)} matching without exception regions)")
+
+
+def functions(m, sec, starts, md, which=None, funcs=None):
     blob = m.read(sec.addr, sec.size)
-    funcs = set(starts)
+    funcs = set(starts) if funcs is None else funcs
     for k, a in enumerate(starts):
         if which is not None and a not in which:
             continue
@@ -575,6 +940,10 @@ def functions(m, sec, starts, md, which=None):
 
 def main():
     m, sec, starts, md = load()
+    if "--batch" in sys.argv:
+        k = sys.argv.index("--batch")
+        write_batch(m, sec, starts, md, sys.argv[k + 1], int(sys.argv[k + 2]) if len(sys.argv) > k + 2 else 100000)
+        return
     if "--coverage" in sys.argv:
         total = collections.Counter()
         bad_funcs = ok = n_ins = 0
@@ -591,7 +960,12 @@ def main():
         for k, v in total.most_common(40):
             print(f"  {k:16} {v}")
         return
-    want = {int(a, 16) for a in sys.argv[1:]}
+    if "--random" in sys.argv:  # a reproducible random sample, for compile tests
+        import random
+        rnd = random.Random(1)
+        want = set(rnd.sample(starts, int(sys.argv[sys.argv.index("--random") + 1])))
+    else:
+        want = {int(a, 16) for a in sys.argv[1:]}
     os.makedirs(OUT, exist_ok=True)
     parts = [PRELUDE]
     decl = []

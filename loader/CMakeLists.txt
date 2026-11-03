@@ -33,7 +33,18 @@ add_custom_command(OUTPUT ${GLYPHS_INC}
     COMMAND Python3::Interpreter -E ${CMAKE_CURRENT_SOURCE_DIR}/../tools/make_glyphs.py ${GLYPHS_INC}
     DEPENDS ../tools/make_glyphs.py)
 set_source_files_properties(proxy/gamepad.c PROPERTIES OBJECT_DEPENDS ${GLYPHS_INC})
-add_library(il2cpp SHARED proxy/proxy.c proxy/fmod_audio.c proxy/gamepad.c proxy/haptics.c proxy/tilt.c proxy/gamecenter_net.c ${API_STUBS})
+# Validation harness for the recompiled (PC) build: -DMK_RECOMP_BATCH=ON compiles the generated
+# work/recomp/batch.c (tools/a64toc.py --batch; game-derived, never in Git) into the proxy.
+option(MK_RECOMP_BATCH "link work/recomp/batch.c" OFF)
+set(RECOMP_SOURCES proxy/recomp_rt.c proxy/recomp_rt.S)
+if(MK_RECOMP_BATCH)
+    set(RECOMP_BATCH ${CMAKE_CURRENT_SOURCE_DIR}/../work/recomp/batch.c)
+    set_source_files_properties(${RECOMP_BATCH} PROPERTIES COMPILE_OPTIONS "-O1;-Wno-unused-label;-Wno-parentheses-equality;-Wno-unused-variable"
+                                INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/proxy)
+    list(APPEND RECOMP_SOURCES ${RECOMP_BATCH})
+endif()
+add_library(il2cpp SHARED proxy/proxy.c proxy/fmod_audio.c proxy/gamepad.c proxy/haptics.c proxy/tilt.c proxy/gamecenter_net.c
+            ${RECOMP_SOURCES} ${API_STUBS})
 target_link_libraries(il2cpp mkdarwin aaudio)
 target_include_directories(il2cpp PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_link_options(il2cpp PRIVATE -Wl,--exclude-libs,ALL -Wl,-Bsymbolic)

@@ -47,3 +47,10 @@
 
 - Unity Editor 2019.4.17f1（Windows，含 libil2cpp 原始碼）與 Windows Build Support（IL2CPP）模組：從 Unity Hub／官方下載。
 - FMOD 的 Windows 函式庫：fmod.com（要帳號）。
+
+## 進度（同一天，第一階段開工）
+
+- 使用者同意下載。Unity Editor 2019.4.17f1 與 Windows IL2CPP 模組從 Unity 官方 CDN 下載（簽章確認是 Unity Technologies），用 7-Zip 解到 `work/unity/editor`、`work/unity/winil2cpp`，沒有執行安裝程式。libil2cpp 原始碼在 `editor/Editor/Data/il2cpp/libil2cpp`，Windows 64 位元 IL2CPP 播放器在 `winil2cpp/…/Variations/win64_nondevelopment_il2cpp/UnityPlayer.dll`。
+- 轉換器補上向量／NEON 與其餘指令：**112,885 個函式只剩 1 個有 2 條指令沒轉（100.0%）**。隨機 3,000 個函式（10 MB 的 C）編成 x86_64 沒有錯誤。
+- **結構位移**：用 clang 的 record layout 比對 libil2cpp 的 35 個結構（`Il2CppClass`、`MethodInfo`、`Il2CppObject`、`Il2CppArray`、註冊表…）在 LP64 與 LLP64 下的位移，全部一致（唯一的差異來自測試時借用的 Android 標頭把 `uintptr_t` 定成 `unsigned long`，真正的 Windows 上是 8 bytes）。原本最大的風險之一排除。
+- **Thor 驗證工具**：`a64toc.py --batch REGEX` 產生 `work/recomp/batch.c`（轉好的函式＋每個函式一個進入 thunk＋對照表）；`loader/proxy/recomp_rt.{c,S,h}` 是執行環境：`mk_rc_enter` 把參數暫存器存進 `cpu` 結構、在真正的堆疊上給一塊 guest 堆疊（GC 掃得到）；`mk_rc_host` 用 guest 暫存器呼叫原生程式碼（複製 256 bytes 的堆疊參數）；`dispatch` 查表決定走轉換版或原生版。CMake 加 `-DMK_RECOMP_BATCH=ON` 才會把 batch 編進 proxy。第一批：遊戲自己的 `Update`／`LateUpdate`／`FixedUpdate`（275 個，沒有例外區段）已經編好，等 Thor 鎖。
