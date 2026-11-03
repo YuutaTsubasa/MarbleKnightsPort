@@ -65,3 +65,21 @@ Android 版本來就是跑 iOS 自己的 IL2CPP 執行環境（在 `__text` 裡�
 - `loader/win/ga_main.c`＋`tools/gen_win_stubs.py`：先做一個只會記錄的 `GameAssembly.dll`（229 個 il2cpp API 都輸出，呼叫時寫進 `mk_ga.log`、回傳 0），用 VS 2022 Build Tools＋clang-cl 編。
 - 實跑：Windows 播放器載入我們的 DLL，呼叫順序和 Android 一樣：`add_internal_call`（註冊 icall）→ `runtime_unhandled_exception_policy_set` → `set_commandline_arguments` → `set_config_dir` → `set_data_dir` → `debugger_set_agent_options` → `il2cpp_init`（stub 回 0，所以停在這裡）。
 - 下一步：Windows 版的 Mach-O 載入器與 Darwin 相容層、x64 ↔ guest 的呼叫轉接，然後把整份程式碼轉出來編進 `GameAssembly.dll`，目標是讓 `il2cpp_init` 跑完。
+
+## Windows 進度：il2cpp_init 成功（同一天）
+
+整份 UnityFramework（224,657 個函式、約 1,000 萬條 ARM64 指令）轉成 C（151 個檔、685 MB），clang-cl 編成 157 MB 的 `GameAssembly.dll`（完整重建約 20 分鐘，拿 heavy-build 鎖）。官方 Windows 播放器載入後：
+
+1. 553 個靜態初始化全部跑完；
+2. `il2cpp_init` 回傳 **1**：iOS 的 IL2CPP 執行環境在 x64 上初始化成功（global-metadata.dat 載入）；
+3. Unity 開始呼叫 icall（`ScriptableObject::CreateScriptableObject` 等）、載入場景。
+
+途中修掉的問題（都記在 commit 裡）：bind 位址沒有 64 位元環繞（macho.py）、跳躍表比對位址錯、posix_memalign 配置的記憶體被 free（heap corruption；改成統一的配置器）、mmap 超過檔尾（Windows 不允許）、icall 指標被包兩次。
+
+工具：`tools/run_win.sh`（跑、看兩份 log）、`MK_TRACE_IMPORTS=1`（記錄每個匯入函式呼叫）、`MK_WATCHDOG=秒`（定期取樣主執行緒的堆疊，名字從 PDB 來）。
+
+下一步：
+- CoreFoundation（`CFLocaleCopyCurrent` 等傳回 0 之後 strlen(NULL) 當掉）：照 Android 的 darwin_cf.c 補。
+- 著色器：播放器說「shader is not supported on this GPU」——資料裡只有 Metal／GLES3 程式，要照計畫轉成 OpenGL Core 並用 `-force-glcore` 啟動。
+- 外掛（手把、存檔、Game Center 區網…）在 Windows 上要換成 host 版本。
+- GC 的執行緒掃描（host 暫存器／堆疊）與效能還沒驗證。

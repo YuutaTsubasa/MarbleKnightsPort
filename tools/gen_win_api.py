@@ -81,6 +81,8 @@ def main():
             params.append(f"{ct} a{j}")
             if kind == "i":
                 xs.append(f"(uint64_t)a{j}")
+            elif kind == "c" and name in SPECIAL:  # the hand-written entry already made it a marker
+                xs.append(f"(uint64_t)(uintptr_t)a{j}")
             elif kind == "c":
                 xs.append(f'mk_host_callback(a{j}, "{name}#{j}")')
             elif kind == "f":
