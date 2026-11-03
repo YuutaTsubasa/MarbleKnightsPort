@@ -189,6 +189,7 @@ __attribute__((visibility("default"))) int il2cpp_init(const char *domain) {
     mk_gamepad_init(g_external_files, g_debug);
     if (g_debug) { void mk_haptic_test(void); mk_haptic_test(); }
     if (getenv("MK_DUMP")) dump_class("GameCenter", "GameCenter");
+    { void dump_classes_from_file(void); dump_classes_from_file(); }
     if (g_debug) dump_class("AppleGameController", "AppleGameController");
     {
         static const char *structs[] = { "AppleGameController.ControllerElements", 0 };
@@ -277,6 +278,7 @@ __attribute__((visibility("default"))) void *il2cpp_runtime_invoke(const void *m
     }
     ck_pump();
     agc_pump();
+    { void mk_gc_net_pump(void); mk_gc_net_pump(); }
     watch_pause(m, params);
     return real_il2cpp_runtime_invoke(m, obj, params, exc);
 }
@@ -349,6 +351,7 @@ static int cmp_ent(const void *a, const void *b) {
 }
 
 extern void *il2cpp_class_get_nested_types(void *, void **);
+extern int il2cpp_class_instance_size(void *);
 static size_t g_mcap;
 static void add_class_methods(void *k, int depth) {
     void *it = NULL;
@@ -524,7 +527,7 @@ static void patch_cloudkit(void);
 static void patch_gamecenter(void);
 static void patch_agc(void);
 typedef struct { uintptr_t off; void *fn; const char *name; } mk_native;
-extern const mk_native mk_haptic_natives[], mk_tilt_natives[];
+extern const mk_native mk_haptic_natives[], mk_tilt_natives[], mk_gc_net_natives[];
 static void patch_image(void) {
     patch_cloudkit();
     patch_gamecenter();
@@ -601,10 +604,39 @@ static void *find_class(const char *ns, const char *name) {
     return NULL;
 }
 
+static void dump_class_k(void *k, const char *ns, const char *name);
 static void dump_class(const char *ns, const char *name) {
-    void *k = find_class(ns, name), *it = NULL;
-    const void *m;
+    void *k = find_class(ns, name);
     if (!k) { LOG("class %s.%s not found", ns, name); return; }
+    dump_class_k(k, ns, name);
+}
+
+// <external files>/mkdump.txt: one class path per line ("Ns.Outer/Inner"); fields, methods and
+// nested types of each go to logcat. Analysis aid only.
+void dump_classes_from_file(void) {
+    char path[600], line[300];
+    snprintf(path, sizeof(path), "%s/mkdump.txt", g_external_files);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!line[0]) continue;
+        void *k = find_class_path(line), *it = NULL, *fl, *n;
+        if (!k) { LOG("class %s not found", line); continue; }
+        LOG("class %s: size %d", line, il2cpp_class_instance_size(k));
+        while ((fl = il2cpp_class_get_fields(k, &it)))
+            LOG("  %s field +%zu %s %s", line, il2cpp_field_get_offset(fl), il2cpp_type_get_name(il2cpp_field_get_type(fl)),
+                il2cpp_field_get_name(fl));
+        it = NULL;
+        while ((n = il2cpp_class_get_nested_types(k, &it))) LOG("  %s nested %s", line, il2cpp_class_get_name(n));
+        dump_class_k(k, "", line);
+    }
+    fclose(f);
+}
+
+static void dump_class_k(void *k, const char *ns, const char *name) {
+    void *it = NULL;
+    const void *m;
     while ((m = il2cpp_class_get_methods(k, &it))) {
         char sig[400];
         uint32_t iflags = 0, flags = il2cpp_method_get_flags(m, &iflags);
@@ -613,7 +645,7 @@ static void dump_class(const char *ns, const char *name) {
         uint32_t pc = real_il2cpp_method_get_param_count(m);
         for (uint32_t i = 0; i < pc && n < (int)sizeof(sig) - 60; i++)
             n += snprintf(sig + n, sizeof(sig) - n, "%s%s", i ? ", " : "", il2cpp_type_get_name(il2cpp_method_get_param(m, i)));
-        LOG("  %s.%s: %s)  ptr=UnityFramework+%#lx flags=%#x", ns, name, sig,
+        LOG("  %s%s%s: %s)  ptr=UnityFramework+%#lx flags=%#x", ns, *ns ? "." : "", name, sig,
             (unsigned long)(*(const uintptr_t *)m - (uintptr_t)g_img.base), flags);
     }
 }
@@ -868,32 +900,35 @@ static void watch_object(const void *m, void *obj) {
     }
 }
 
-// ---- GameCenter plugin replacement: an offline, signed-in local player ----
+// ---- GameCenter plugin replacement: a signed-in local player; matches in gamecenter_net.c ----
 // Native side of GameCenter.GameCenter (game's own plugin, DllImport "__Internal").
 // _GCInitialize copies a table of 19 callbacks; the first is OnAuthentication(bool ok, const char *error).
 typedef struct { const char *id, *name; } gc_player;  // returned in x0/x1
 static void (*g_gc_on_auth)(int ok, const char *error);
 
+void mk_gc_net_init(const char *files_dir, void *const *handlers);
+void mk_gc_net_pump(void);
 static void gc_initialize(void *const *handlers) {
     g_gc_on_auth = (void (*)(int, const char *))handlers[0];
+    mk_gc_net_init(g_external_files, handlers);  // matches over the LAN (gamecenter_net.c)
     LOG("GameCenter(local) initialize: reporting an authenticated player");
     if (g_gc_on_auth) g_gc_on_auth(1, NULL);
 }
 static void gc_noop(void) {}
-static gc_player gc_local_player(void) { gc_player p = { strdup("G:0000000001"), strdup("Player") }; return p; }
 static int gc_true(void) { return 1; }
 static int gc_false(void) { return 0; }
 
 static void patch_gamecenter(void) {
     static const struct { uintptr_t off; void *fn; const char *name; } fns[] = {
         { 0x209a68, gc_initialize, "_GCInitialize" }, { 0x209af4, gc_noop, "_GCTimeoutInitialize" },
-        { 0x209b3c, gc_noop, "_GCShutdown" }, { 0x209b84, gc_local_player, "_GCLocalPlayer" },
-        { 0x209be8, gc_true, "_GCIsAuthenticated" }, { 0x209c3c, gc_true, "_GCIsMultiplayerRestricted" },
+        { 0x209b3c, gc_noop, "_GCShutdown" },
+        { 0x209be8, gc_true, "_GCIsAuthenticated" },
         { 0x209ce0, gc_false, "_GCIsUnderage" }, { 0x209f64, gc_false, "_GCCanShowAccessPoint" },
         { 0x20a0c0, gc_false, "_GCIsShowingDashboard" }, { 0x20a020, gc_noop, "_GCShowAccessPoint" },
         { 0x20a070, gc_noop, "_GCSetAccessPointFocus" }, { 0x20a658, gc_noop, "_GCReportAchievement" },
     };
     for (size_t i = 0; i < sizeof(fns) / sizeof(fns[0]); i++) redirect_image_function(fns[i].off, fns[i].fn, fns[i].name);
+    for (const mk_native *n = mk_gc_net_natives; n->name; n++) redirect_image_function(n->off, n->fn, n->name);
 }
 
 // ---- icall ABI adapters (Apple caller -> Android libunity callee) ----

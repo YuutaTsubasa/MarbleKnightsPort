@@ -10,6 +10,15 @@ n=${VPAD:-2}
 d=/data/local/tmp/mk/vpad$n
 send() { "${dev[@]}" shell "echo '$1' > $d/in"; }
 syn='0,0,0'
+# Pad input goes to whichever app has focus (with two screens, the focused display's app). Never
+# inject unless Marble Knights is the focused app: once the launcher had focus and the presses
+# started another game.
+guard() {
+  local f
+  f=$("${dev[@]}" shell dumpsys window | grep -m1 mCurrentFocus || true)
+  case "$f" in *com.yuutatsubasa.marbleknights*) ;; *) echo "focused window is not Marble Knights ($f); not sending input" >&2; exit 4;; esac
+}
+case "${1:-}" in press|axis) guard ;; esac
 case "${1:-}" in
   start)
     "${dev[@]}" shell "mkdir -p $d; rm -f $d/in; mkfifo $d/in"

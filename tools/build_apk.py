@@ -4,7 +4,9 @@ our proxy libil2cpp.so + the iOS UnityFramework + the iOS Data folder.
 Everything read and written here is game/Unity data and stays under work/ and
 out/ (gitignored). Never upload the result anywhere.
 
-usage: python -I tools/build_apk.py [--with-raw] [--patch-platform]
+usage: python -I tools/build_apk.py [--with-raw] [--patch-platform] [--instance NAME] [--resizeable]
+  --instance b: a second copy (package ...marbleknights.b, "Marble Knights B") for testing online
+                rooms on one device in split screen; --resizeable allows split screen
 """
 import os
 import shutil
@@ -21,16 +23,23 @@ VAR = os.path.join(PLAYER, "Variations", "il2cpp", "Release")
 SDK = os.environ.get("ANDROID_HOME") or os.path.join(os.environ["LOCALAPPDATA"], "Android", "Sdk")
 BT = os.path.join(SDK, "build-tools", "36.0.0")
 PLATFORM = os.path.join(SDK, "platforms", "android-35", "android.jar")
-PACKAGE = "com.yuutatsubasa.marbleknights"
+def arg(name):
+    return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else None
+INSTANCE = arg("--instance")
+RESIZEABLE = "--resizeable" in sys.argv or INSTANCE is not None
+PACKAGE = "com.yuutatsubasa.marbleknights" + ("." + INSTANCE if INSTANCE else "")
+LABEL = "Marble Knights" + (" " + INSTANCE.upper() if INSTANCE else "")
 OUT = os.path.join(ROOT, "out")
 STAGE = os.path.join(WORK, "apkstage")
 
-MANIFEST = f"""<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{PACKAGE}"
+MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{package}"
     android:versionCode="1" android:versionName="0.0.1" android:installLocation="preferExternal">
   <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="29" />
   <uses-feature android:glEsVersion="0x00030000" />
   <uses-permission android:name="android.permission.VIBRATE" />
+  <!-- online rooms over the LAN (loader/proxy/gamecenter_net.c) -->
+  <uses-permission android:name="android.permission.INTERNET" />
   <!-- game data (3.4 GB) lives in /sdcard/MarbleKnights so it survives reinstalls; needs legacy storage -->
   <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
   <supports-screens android:smallScreens="true" android:normalScreens="true" android:largeScreens="true"
@@ -38,7 +47,7 @@ MANIFEST = f"""<?xml version="1.0" encoding="utf-8"?>
   <application android:label="@string/app_name" android:icon="@mipmap/app_icon" android:extractNativeLibs="true"
       android:isGame="true" android:hardwareAccelerated="false" android:requestLegacyExternalStorage="true">
     <activity android:name="com.unity3d.player.UnityPlayerActivity" android:theme="@style/UnityThemeSelector"
-        android:screenOrientation="sensorLandscape" android:launchMode="singleTask" android:resizeableActivity="false"
+        android:screenOrientation="sensorLandscape" android:launchMode="singleTask" android:resizeableActivity="{resizeable}"
         android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale|layoutDirection|density"
         android:exported="true">
       <intent-filter>
@@ -78,10 +87,10 @@ def main():
     shutil.copytree(os.path.join(PLAYER, "Apk", "res"), os.path.join(STAGE, "res"), dirs_exist_ok=True)
     with open(os.path.join(STAGE, "res", "values", "strings.xml"), "w", encoding="utf-8") as f:
         f.write('<?xml version="1.0" encoding="utf-8"?>\n<resources>\n'
-                '  <string name="app_name">Marble Knights</string>\n'
+                f'  <string name="app_name">{LABEL}</string>\n'
                 '  <string name="game_view_content_description">Game view</string>\n</resources>\n')
     with open(os.path.join(STAGE, "AndroidManifest.xml"), "w", encoding="utf-8") as f:
-        f.write(MANIFEST)
+        f.write(MANIFEST.replace("{package}", PACKAGE).replace("{resizeable}", "true" if RESIZEABLE else "false"))
 
     aapt2 = os.path.join(BT, "aapt2.exe")
     run(aapt2, "compile", "--dir", os.path.join(STAGE, "res"), "-o", os.path.join(STAGE, "res.zip"))
@@ -144,7 +153,7 @@ def main():
 
     aligned = os.path.join(STAGE, "aligned.apk")
     run(os.path.join(BT, "zipalign.exe"), "-f", "-p", "4", unsigned, aligned)
-    final = os.path.join(OUT, "marbleknights-private.apk")
+    final = os.path.join(OUT, "marbleknights-private" + ("-" + INSTANCE if INSTANCE else "") + ".apk")
     keystore = os.path.join(os.environ["USERPROFILE"], ".android", "debug.keystore")
     run(os.path.join(BT, "apksigner.bat"), "sign", "--ks", keystore, "--ks-pass", "pass:android",
         "--key-pass", "pass:android", "--out", final, aligned)

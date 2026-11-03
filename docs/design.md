@@ -231,3 +231,21 @@ Android 的影片解碼器用 `ScriptMapper::FindShader("Hidden/VideoDecodeAndro
 修掉的問題：遊戲的控制器編號照 Apple 的 `GCController.controllers`（連線順序的緊密清單，拔掉一支後面的往前補；`CustomAppleController.AdjustControllerIndexForDisconnect`），但 Unity 的搖桿槽位會保留空位。原本拔掉中間那支時，我們不送斷線事件，後面那支的編號也對不到。現在 `proxy.c` 用 `g_agc_slot[]` 把遊戲的編號對到 Unity 槽位：斷線時從清單移除並送那個編號的斷線事件，新的手把接到清單最後。驗證：拔掉 P1（中間那支）後，P2 仍由原本的手把控制；重新插上的手把成為第 3 支。
 
 遊戲自己的行為（iOS 上也一樣）：拔掉的那位玩家會被改到編號 0 的手把（Thor 的內建手把）。
+
+## 23. 線上房間：區網版 Game Center（2026-11-03，進行中）
+
+遊戲的線上多人走自己的 `WFGameCenter` 外掛（ObjC，包 GameKit）：開房的人用 `UnityEngine.Random` 產生房號，`StartMatchmaking(2, 4, 房號, attrs)`；加入的人輸入房號後呼叫同一個函式。GameKit 用 `GKMatchRequest.playerGroup = 房號`（`restrictToAutomatch`）把同房號的人配在一起。之後的連線管理（心跳、可靠訊息、換 host）都在遊戲自己的 `GameCenterMessageBus` 裡，外掛只負責配對、玩家清單、連線狀態事件和收送資料。
+
+替代實作 `loader/proxy/gamecenter_net.c`（25 個原生函式，位址從 managed wrapper 的 `b` 目標解出來）：
+- 回呼表照 `GameCenter.GameCenter.EventHandlers` 的 20 個欄位（認證、…、找到配對 9、配對失敗 10、開始 11、連線狀態 13、收到資料 14、…、斷線 19）。`Player` 是兩個 `char*` 的結構，用 x0/x1 傳值。
+- `GetPlayersInMatch` 回傳 malloc 的陣列；IL2CPP 的 wrapper 只讀第一個元素（回傳型別的陣列長度未知），所以遊戲靠連線狀態事件知道每位玩家。
+- 區網協定（UDP）：搜尋中的裝置對 47811 埠廣播房號 beacon；房間裡第一個人（同時開始時 id 小的）負責收 JOIN、把成員清單發給所有人；之後點對點收送。可靠模式自己做序號＋ack＋重送＋依序交付；每秒心跳，10 秒沒聲音算斷線。
+- 事件順序照 GameKit：找到配對 → 每位玩家一個 Connected → 配對開始。房間在找到配對後不再收人，直到遊戲呼叫 `AddPlayersToMatch`（host 在有人連上時會自己呼叫）。
+- 本機玩家 id 和名字存在 App 外部 files 的 `player.txt`（第一次隨機產生，可以改名字）。`IsMultiplayerRestricted` 改回 0，Manifest 加 `INTERNET`。
+- 其他原生函式（好友、最近玩家、成就畫面、分享房號）回空結果或不做事。
+
+測試輔助：`build_apk.py --instance b` 打包第二份（套件 `…marbleknights.b`，可以和正式的同時裝）。
+
+狀態：建置與初始化通過（兩份各自產生 id，資料埠、廣播埠都開好）。**還沒有兩邊真的連起來玩過**：同一台 Thor 上，第二個畫面（Screen-2）的那份卡在開場影片、畫面全黑，分割畫面也開不起來，所以要第二台 Android 裝置測。
+
+事故紀錄：測試時把 A 從第二個畫面關掉後，焦點落到桌面 App 的第二畫面，虛擬手把的 A 鍵讓它開了另一個遊戲。`tools/vpad.sh` 現在送輸入前會檢查焦點視窗是不是 Marble Knights，不是就拒絕。
