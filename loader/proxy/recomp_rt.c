@@ -30,6 +30,8 @@ static const mk_rc_entry *find(uint64_t off) {
     return NULL;
 }
 
+uint64_t mk_tsd_base(void) { uint64_t v; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(v)); return v; }
+
 void dispatch(cpu *c, uint64_t target) {
     const mk_rc_entry *e = target >= IMG ? find(target - IMG) : NULL;
     if (e) e->fn(c);

@@ -10,6 +10,8 @@ Output is generated from the game and stays in work/recomp (never in Git).
 usage: python -E tools/a64toc.py --coverage            all functions in the il2cpp section
        python -E tools/a64toc.py <hex addr> [...]       write work/recomp/sample.c for these functions
        python -E tools/a64toc.py --random N             same for N random functions (compile test)
+       python -E tools/a64toc.py --all [N]              whole image for the Windows build -> work/win/gen
+                                                       (N functions per chunk; needs tools/prelink_win.py first)
        python -E tools/a64toc.py --batch REGEX [N]      work/recomp/batch.c: methods matching REGEX, for the
                                                        Android validation harness (loader/proxy/recomp_rt.c)
 (needs capstone; run from a neutral cwd)
@@ -18,6 +20,7 @@ import bisect
 import re
 import collections
 import os
+import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -156,15 +159,35 @@ class Fn:
         self.emit(f"{{ uint{bits}_t _r = (uint{bits}_t)({r_expr}); N = (_r >> {bits - 1}) & 1; Z = _r == 0; C = 0; V = 0; "
                   + (self.setreg(dst, "_r") if dst is not None else "") + " }")
 
+    stubs = {}  # __stubs address -> import index (whole-image mode)
+    eh_sites = ()  # parse_lsda() result for this function (whole-image mode)
+
+    def eh_wrap(self, i, call):
+        for k, (st, en, lp, clauses) in enumerate(self.eh_sites):
+            if st <= i.address < en:
+                self.labels.add(lp)
+                name = f"eh_{self.start:x}_{k}"
+                if name not in self.eh_decls:
+                    sel = ", ".join(str(sv) for sv, _ in clauses)
+                    ti = ", ".join(f"{tv:#x}ull" for _, tv in clauses)
+                    self.eh_decls[name] = (f"static const int64_t {name}_sel[] = {{ {sel} }}; static const uint64_t {name}_ti[] = {{ {ti} }}; "
+                                           f"static const mk_eh_site {name} = {{ {len(clauses)}, {name}_sel, {name}_ti }};")
+                return f"MK_EH_CALL({name}, L_{lp:x}, {call})"
+        return call
+
     def target(self, i, t):
         if self.start <= t < self.end:
             self.labels.add(t)
             return f"goto L_{t:x};"
+        if t in self.stubs:
+            return f"imp_{self.stubs[t]}(c); return;"
         if t in self.funcs:
             return f"f_{t:x}(c); return;"
         return f"host_call(c, IMG + {t:#x}ull); return;"
 
     def call(self, t):
+        if t in self.stubs:
+            return f"imp_{self.stubs[t]}(c);"
         if t in self.funcs:
             return f"c->x[30] = 0; f_{t:x}(c);"
         return f"host_call(c, IMG + {t:#x}ull);"
@@ -334,7 +357,7 @@ class Fn:
             self.emit(f"c->v[{n}].u[0] = *({ty} *)({a}); c->v[{n}].u[1] = 0;")
             return
         # scalar FP forms
-        if len(t) >= 2 and S(t[0]) and S(t[1]) and not any(x.startswith("v") for x in t):
+        if len(t) >= 2 and S(t[0]) and S(t[1]) and not any(re.match(r"^v\d", x) for x in t):
             d, ty = sreg(t[0])
             x, _ = sreg(t[1])
             fx = "f" if ty == "float" else ""
@@ -396,6 +419,18 @@ class Fn:
             self.emit(f"c->v[{n}].{fld}[{k}] = *({ty} *)({a});")
             return
         # element-wise vector arithmetic
+        if mn in ("mvn", "not") and len(t) == 2 and t[0].startswith("v"):
+            n, cnt, el = vreg(t[0])
+            m_ = vreg(t[1])[0]
+            k = 1 if cnt * {"b": 8, "h": 16, "s": 32, "d": 64}[el] == 64 else 2
+            self.emit("".join(f"c->v[{n}].u[{j}] = ~c->v[{m_}].u[{j}]; " for j in range(k)) + (f" c->v[{n}].u[1] = 0;" if k == 1 else ""))
+            return
+        if mn == "orn" and len(t) == 3 and t[0].startswith("v"):
+            n, cnt, el = vreg(t[0])
+            a_, b_ = vreg(t[1])[0], vreg(t[2])[0]
+            k = 1 if cnt * {"b": 8, "h": 16, "s": 32, "d": 64}[el] == 64 else 2
+            self.emit("{ vreg _a = c->v[%d], _b = c->v[%d]; " % (a_, b_) + "".join(f"c->v[{n}].u[{j}] = _a.u[{j}] | ~_b.u[{j}]; " for j in range(k)) + "}" + (f" c->v[{n}].u[1] = 0;" if k == 1 else ""))
+            return
         VB = {"add": "+", "sub": "-", "mul": "*", "and": "&", "orr": "|", "eor": "^"}
         VF = {"fadd": "+", "fsub": "-", "fmul": "*", "fdiv": "/"}
         if (mn in VB or mn in VF) and len(t) == 3 and t[0].startswith("v"):
@@ -495,14 +530,19 @@ class Fn:
     def ins_c(self, i):
         mn, ops = i.mnemonic, i.operands
         cc = getattr(i, "cc", 0)
-        if mn == "nop" or mn.startswith(("prfm", "dmb", "dsb", "isb", "hint")):
+        if mn == "nop" or mn.startswith(("prfm", "prfum", "dmb", "dsb", "isb", "hint", "yield", "clrex")):
+            if mn == "clrex":
+                self.emit("c->ex_a = 0;")
+            return
+        if mn == "mrs" and "tpidrro_el0" in i.op_str:  # Apple: the thread's TSD array (pthread_getspecific slots)
+            self.emit(self.setreg(ops[0].reg, "mk_tsd_base()"))
             return
         if self.is_vec_form(i):
             self.vec(i)
             return
         if mn in ("b", "bl") and ops[0].type == A.ARM64_OP_IMM and cc in (0, A.ARM64_CC_AL, A.ARM64_CC_INVALID):
             t = ops[0].imm
-            self.emit(self.call(t) if mn == "bl" else self.target(i, t))
+            self.emit(self.eh_wrap(i, self.call(t)) if mn == "bl" else self.target(i, t))
             return
         if mn.startswith("b.") or (mn == "b" and cc):
             self.emit(f"if ({COND[cc]}) {self.target(i, ops[0].imm)}")
@@ -517,7 +557,7 @@ class Fn:
             self.emit("return;")
             return
         if mn == "blr":
-            self.emit(f"dispatch(c, {self.reg(ops[0].reg)});")
+            self.emit(self.eh_wrap(i, f"dispatch(c, {self.reg(ops[0].reg)});"))
             return
         if mn == "br":
             self.emit(f"{{ uint64_t _t = {self.reg(ops[0].reg)}; LOCAL_JUMP(_t); }}")
@@ -657,7 +697,27 @@ class Fn:
         # ---- loads and stores ----
         LD = {"ldr": None, "ldur": None, "ldrb": "uint8_t", "ldurb": "uint8_t", "ldrh": "uint16_t", "ldurh": "uint16_t",
               "ldrsb": "int8_t", "ldursb": "int8_t", "ldrsh": "int16_t", "ldursh": "int16_t", "ldrsw": "int32_t", "ldursw": "int32_t",
-              "ldar": None, "ldarb": "uint8_t", "ldarh": "uint16_t", "ldaxr": None, "ldxr": None}
+              "ldar": None, "ldarb": "uint8_t", "ldarh": "uint16_t"}
+        LDX = {"ldaxr": None, "ldxr": None, "ldaxrb": "uint8_t", "ldxrb": "uint8_t", "ldaxrh": "uint16_t", "ldxrh": "uint16_t"}
+        if mn in LDX:
+            t = LDX[mn] or ("uint32_t" if self.is_w(ops[0].reg) else "uint64_t")
+            a, _ = self.addr(i, ops[1])
+            self.emit(f"{{ uint64_t _a = {a}; c->ex_a = _a; c->ex_v = *(volatile {t} *)_a; " + self.setreg(ops[0].reg, "c->ex_v") + " }")
+            return
+        if mn in ("ldxp", "ldaxp"):
+            w = self.is_w(ops[0].reg)
+            t = "uint32_t" if w else "uint64_t"
+            a, _ = self.addr(i, ops[2])
+            self.emit(f"{{ uint64_t _a = {a}; c->ex_a = _a; c->ex_v = ((volatile {t} *)_a)[0]; c->ex_v2 = ((volatile {t} *)_a)[1]; "
+                      + self.setreg(ops[0].reg, "c->ex_v") + " " + self.setreg(ops[1].reg, "c->ex_v2") + " }")
+            return
+        if mn in ("stxp", "stlxp"):
+            w = self.is_w(ops[1].reg)
+            a, _ = self.addr(i, ops[3])
+            f = "mk_cas64pair" if w else "mk_cas128"
+            self.emit(f"{{ uint64_t _a = {a}; int _ok = c->ex_a == _a && {f}(_a, c->ex_v, c->ex_v2, {self.reg(ops[1].reg)}, {self.reg(ops[2].reg)}); "
+                      + self.setreg(ops[0].reg, "_ok ? 0 : 1") + " c->ex_a = 0; }")
+            return
         ST = {"str": None, "stur": None, "strb": "uint8_t", "sturb": "uint8_t", "strh": "uint16_t", "sturh": "uint16_t",
               "stlr": None, "stlrb": "uint8_t", "stlrh": "uint16_t"}
         if mn in LD or mn in ST:
@@ -679,9 +739,7 @@ class Fn:
                 wb = ""
             rn = self.rname(r.reg)
             if rn[0] in "sdqbh" and rn not in ("xzr", "wzr"):
-                if rn[0] not in "sdq":
-                    raise Unsupported("fp b/h")
-                size = {"s": 4, "d": 8, "q": 16}[rn[0]]
+                size = {"b": 1, "h": 2, "s": 4, "d": 8, "q": 16}[rn[0]]
                 if mn in LD:
                     self.emit(f"memcpy(&c->v[{int(rn[1:])}], (void *)({a}), {size});" + (f" memset((char *)&c->v[{int(rn[1:])}] + {size}, 0, {16 - size});" if size < 16 else ""))
                 else:
@@ -723,10 +781,11 @@ class Fn:
             if wb:
                 self.emit(wb)
             return
-        if mn in ("stxr", "stlxr", "stxrb", "stlxrb"):
-            t = "uint8_t" if mn.endswith("b") else ("uint32_t" if self.is_w(ops[1].reg) else "uint64_t")
+        if mn in ("stxr", "stlxr", "stxrb", "stlxrb", "stxrh", "stlxrh"):
+            t = "uint8_t" if mn.endswith("b") else "uint16_t" if mn.endswith("h") else ("uint32_t" if self.is_w(ops[1].reg) else "uint64_t")
             a, _ = self.addr(i, ops[2])
-            self.emit(f"*({t} *)({a}) = ({t}){self.reg(ops[1].reg)}; " + self.setreg(ops[0].reg, "0"))  # single-threaded model
+            self.emit(f"{{ uint64_t _a = {a}; int _ok = c->ex_a == _a && __atomic_compare_exchange_n((volatile {t} *)_a, &(({t}){{ ({t})c->ex_v }}), ({t}){self.reg(ops[1].reg)}, 0, 5, 5); "
+                      + self.setreg(ops[0].reg, "_ok ? 0 : 1") + " c->ex_a = 0; }")
             return
         # ---- scalar floating point ----
         if mn == "fmov":
@@ -813,6 +872,7 @@ class Fn:
 
     def translate(self):
         unsupported = collections.Counter()
+        self.eh_decls = {}
         self.needs_local_jump = False
         for i in self.ins:
             self.body.append(("label", i.address))
@@ -829,7 +889,7 @@ class Fn:
         return unsupported
 
     def c_source(self):
-        out = [f"void f_{self.start:x}(cpu *c) {{"]
+        out = list(getattr(self, "eh_decls", {}).values()) + [f"void f_{self.start:x}(cpu *c) {{"]
         for item in self.body:
             if isinstance(item, tuple):
                 if item[1] in self.labels:
@@ -840,7 +900,7 @@ class Fn:
             out.append("local_jump:")
             out.append("    switch (c->jt) {")
             out += [f"    case {a:#x}: goto L_{a:x};" for a in sorted(self.labels)]
-            out.append("    default: dispatch(c, c->jt); return;\n    }")
+            out.append("    default: dispatch(c, IMG + c->jt); return;\n    }")
         out.append("}")
         return "\n".join(out)
 
@@ -849,11 +909,18 @@ PRELUDE = r"""// generated by tools/a64toc.py from UnityFramework (game code): d
 #include <math.h>
 #include <string.h>
 #include "recomp_rt.h"  // cpu, vreg, IMG, host_call, dispatch, trap, fcmp_flags
+#ifdef _WIN32  // C++ landing pads: the call runs under SEH; the filter emulates the Itanium personality
+#include <excpt.h>
+#define MK_EH_CALL(site, pad, ...) { mk_eh_state _s; mk_eh_save(c, &_s); __try { __VA_ARGS__ } \
+    __except (mk_eh_filter(GetExceptionInformation(), c, &(site))) { mk_eh_restore(c, &_s); goto pad; } }
+#else
+#define MK_EH_CALL(site, pad, ...) { __VA_ARGS__ }
+#endif
 #define N c->n
 #define Z c->z
 #define C c->cf
 #define V c->vf
-#define LOCAL_JUMP(t) do { c->jt = (t); goto local_jump; } while (0)
+#define LOCAL_JUMP(t) do { c->jt = (t) - IMG; goto local_jump; } while (0)  // br targets are absolute, labels are offsets
 #define UNSUPPORTED(pc) trap(c, (pc))
 static inline uint32_t ror32(uint32_t x, unsigned s) { return (x >> s) | (x << ((32 - s) & 31)); }
 static inline uint64_t ror64(uint64_t x, unsigned s) { return (x >> s) | (x << ((64 - s) & 63)); }
@@ -878,12 +945,193 @@ static inline uint64_t cvt_ps64(double d) { return cvt_zs64(ceil(d)); }
 
 def load():
     m = MachO(UF)
-    sec = m.section("__TEXT", "il2cpp")
+    sec = m.section("__TEXT", "__text" if "--text" in sys.argv else "il2cpp")  # --text: engine + IL2CPP runtime
     starts = sorted(a for a in m.function_starts() if sec.addr <= a < sec.addr + sec.size)
     md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
     md.detail = True
     md.skipdata = True
     return m, sec, starts, md
+
+
+def uleb_at(m, a):
+    v = sh = 0
+    while True:
+        b = m.read(a, 1)[0]
+        a += 1
+        v |= (b & 0x7f) << sh
+        sh += 7
+        if not b & 0x80:
+            return v, a
+
+
+def sleb_at(m, a):
+    v = sh = 0
+    while True:
+        b = m.read(a, 1)[0]
+        a += 1
+        v |= (b & 0x7f) << sh
+        sh += 7
+        if not b & 0x80:
+            if b & 0x40:
+                v -= 1 << sh
+            return v, a
+
+
+def read_enc(m, a, enc):
+    """DWARF EH pointer encoding -> (value, next address, indirect)."""
+    if enc == 0xff:
+        return 0, a, False
+    fmt = enc & 0x0f
+    if fmt == 0x01:
+        v, n = uleb_at(m, a)
+    elif fmt == 0x09:
+        v, n = sleb_at(m, a)
+    elif fmt in (0x02, 0x0a):
+        v, n = struct.unpack("<h" if fmt == 0x0a else "<H", m.read(a, 2))[0], a + 2
+    elif fmt in (0x03, 0x0b):
+        v, n = struct.unpack("<i" if fmt == 0x0b else "<I", m.read(a, 4))[0], a + 4
+    elif fmt in (0x00, 0x04, 0x0c):
+        v, n = struct.unpack("<Q", m.read(a, 8))[0], a + 8
+    else:
+        raise ValueError(f"encoding {enc:#x}")
+    if (enc & 0x70) == 0x10:  # pcrel
+        v += a
+    return v & 0xFFFFFFFFFFFFFFFF, n, bool(enc & 0x80)
+
+
+def lsda_map(m):
+    """{function vmaddr: LSDA vmaddr} from __unwind_info."""
+    sec = m.section("__TEXT", "__unwind_info")
+    d = m.read(sec.addr, sec.size)
+    _, _, _, _, _, idx_off, idx_cnt = struct.unpack_from("<7I", d, 0)
+    first = struct.unpack_from("<III", d, idx_off)[2]
+    last = struct.unpack_from("<III", d, idx_off + 12 * (idx_cnt - 1))[2]
+    return dict(struct.unpack_from("<II", d, o) for o in range(first, last, 8))
+
+
+def parse_lsda(m, lsda, fstart):
+    """-> [(start, end, landing pad, [(selector, typeinfo ref)])]; a typeinfo ref is a vm offset,
+    with bit 63 set when it names a pointer slot (indirect encoding), 0 for catch (...);
+    selector 0 = cleanup only."""
+    a = lsda
+    lp_enc = m.read(a, 1)[0]
+    a += 1
+    lpstart = fstart
+    if lp_enc != 0xff:
+        lpstart, a, _ = read_enc(m, a, lp_enc)
+    tt_enc = m.read(a, 1)[0]
+    a += 1
+    tt_base = None
+    if tt_enc != 0xff:
+        off, a = uleb_at(m, a)
+        tt_base = a + off
+    cs_enc = m.read(a, 1)[0]
+    cs_len, a = uleb_at(m, a + 1)
+    cs_end = a + cs_len
+    actions_base = cs_end
+    tt_size = {0x03: 4, 0x0b: 4, 0x00: 8, 0x04: 8, 0x0c: 8, 0x02: 2, 0x0a: 2}.get(tt_enc & 0x0f, 4)
+    sites = []
+    while a < cs_end:
+        st, a, _ = read_enc(m, a, cs_enc & 0x0f)
+        ln, a, _ = read_enc(m, a, cs_enc & 0x0f)
+        lp, a, _ = read_enc(m, a, cs_enc & 0x0f)
+        act, a = uleb_at(m, a)
+        if not lp:
+            continue
+        clauses = []
+        if act == 0:
+            clauses.append((0, 0))
+        else:
+            q = actions_base + act - 1
+            for _ in range(64):
+                flt, q2 = sleb_at(m, q)
+                nxt, _ = sleb_at(m, q2)
+                if flt > 0 and tt_base is not None:
+                    ea = tt_base - flt * tt_size
+                    v, _, ind = read_enc(m, ea, tt_enc)
+                    clauses.append((flt, (v | (1 << 63)) if (ind and v) else v))
+                elif flt == 0:
+                    clauses.append((0, 0))
+                if not nxt:
+                    break
+                q = q2 + nxt
+        sites.append((fstart + st, fstart + st + ln, lpstart + lp, clauses))
+    return sites
+
+
+def stub_imports(m):
+    """{__stubs entry address: import index}; the index is the line number in work/win/image/binds.txt
+    (tools/prelink_win.py), so translated code can call the import handler directly."""
+    slot_index = {}
+    for k, line in enumerate(open(os.path.join(ROOT, "work", "win", "image", "binds.txt"), encoding="utf-8")):
+        slot_index[int(line.split()[0], 16)] = k
+    st = m.section("__TEXT", "__stubs")
+    out = {}
+    for a in range(st.addr, st.addr + st.size, 12):
+        w0, w1 = struct.unpack("<II", m.read(a, 8))
+        if (w0 & 0x9f00001f) != 0x90000010 or (w1 & 0xffc003ff) != 0xf9400210:  # adrp x16 / ldr x16, [x16, #imm]
+            continue
+        immlo, immhi = (w0 >> 29) & 3, (w0 >> 5) & 0x7ffff
+        page = ((immhi << 2) | immlo) << 12
+        if page & (1 << 32):
+            page -= 1 << 33
+        slot = (a & ~0xfff) + page + ((w1 >> 10) & 0xfff) * 8
+        if slot in slot_index:
+            out[a] = slot_index[slot]
+    return out
+
+
+def write_all(m, md, per_chunk):
+    """The whole image for the Windows build: work/win/gen/chunk_NNN.c (both code sections), the
+    dispatch table (fns.c) and the stub table. Generated from the game: never in Git."""
+    out_dir = os.path.join(ROOT, "work", "win", "gen")
+    os.makedirs(out_dir, exist_ok=True)
+    secs = [m.section("__TEXT", "__text"), m.section("__TEXT", "il2cpp")]
+    starts = sorted(a for a in m.function_starts() if any(s.addr <= a < s.addr + s.size for s in secs))
+    allf = set(starts)
+    stubs = stub_imports(m)
+    Fn.stubs = stubs
+    lsdas = lsda_map(m)
+    n_eh = 0
+    chunk, buf, n_unsup, total = 0, [], 0, 0
+
+    def flush():
+        nonlocal chunk, buf
+        if not buf:
+            return
+        body = "\n\n".join(src for src, _ in buf)
+        used = set(re.findall(r"\b(f_[0-9a-f]+|imp_\d+)\(c\)", body))
+        defined = {f"f_{a:x}" for _, a in buf}
+        decl = "\n".join(f"void {n}(cpu *c);" for n in sorted(used | defined))
+        with open(os.path.join(out_dir, f"chunk_{chunk:03d}.c"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(PRELUDE + decl + "\n\n" + body + "\n")
+        chunk += 1
+        buf = []
+
+    for sec in secs:
+        sstarts = [a for a in starts if sec.addr <= a < sec.addr + sec.size]
+        for f in functions(m, sec, sstarts, md, funcs=allf):
+            if f.start in lsdas:
+                try:
+                    f.eh_sites = parse_lsda(m, lsdas[f.start], f.start)
+                    n_eh += 1
+                except (ValueError, IndexError, struct.error) as e:
+                    print(f"LSDA of {f.start:#x}: {e}")
+            u = f.translate()
+            n_unsup += sum(u.values())
+            total += 1
+            buf.append((f.c_source(), f.start))
+            if len(buf) >= per_chunk:
+                flush()
+        flush()
+    with open(os.path.join(out_dir, "fns.c"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write('// generated by tools/a64toc.py --all: guest offset -> translated function\n#include "recomp_rt.h"\n')
+        fh.write("\n".join(f"void f_{a:x}(cpu *c);" for a in starts) + "\n")
+        fh.write("const mk_rc_fn mk_rc_fns[] = {\n" + "\n".join(f"    {{ {a:#x}, f_{a:x} }}," for a in starts) + "\n};\n")
+        fh.write(f"const int mk_rc_nfns = {len(starts)};\n")
+        fh.write("const mk_rc_stub mk_rc_stubs[] = {\n" + "\n".join(f"    {{ {a:#x}, {k} }}," for a, k in sorted(stubs.items())) + "\n};\n")
+        fh.write(f"const int mk_rc_nstubs = {len(stubs)};\n")
+    print(f"{total} functions in {chunk} chunks, {n_unsup} untranslated instructions, {len(stubs)} import stubs, {n_eh} with landing pads -> {out_dir}")
 
 
 def write_batch(m, sec, starts, md, pattern, limit):
@@ -940,6 +1188,9 @@ def functions(m, sec, starts, md, which=None, funcs=None):
 
 def main():
     m, sec, starts, md = load()
+    if "--all" in sys.argv:
+        write_all(m, md, int(sys.argv[sys.argv.index("--all") + 1]) if len(sys.argv) > sys.argv.index("--all") + 1 else 1000)
+        return
     if "--batch" in sys.argv:
         k = sys.argv.index("--batch")
         write_batch(m, sec, starts, md, sys.argv[k + 1], int(sys.argv[k + 2]) if len(sys.argv) > k + 2 else 100000)

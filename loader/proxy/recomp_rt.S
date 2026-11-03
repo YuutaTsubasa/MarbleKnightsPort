@@ -8,7 +8,7 @@
 //   guest sp are copied to the real stack so stack-passed arguments line up.
 // Both keep frame records and CFI so C++ exceptions unwind through them.
 
-#define CPU_SIZE 800
+#define CPU_SIZE 832
 #define CPU_V 272
 
     .text

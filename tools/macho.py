@@ -206,20 +206,20 @@ class MachO:
                 v, i = uleb(buf, i)
                 segoff += v
             elif op == 0x90:
-                out.append((segs[seg]["vmaddr"] + segoff, ordinal, sym, addend, weak))
+                out.append(((segs[seg]["vmaddr"] + segoff) & 0xFFFFFFFFFFFFFFFF, ordinal, sym, addend, weak))
                 segoff += 8
             elif op == 0xA0:
-                out.append((segs[seg]["vmaddr"] + segoff, ordinal, sym, addend, weak))
+                out.append(((segs[seg]["vmaddr"] + segoff) & 0xFFFFFFFFFFFFFFFF, ordinal, sym, addend, weak))
                 v, i = uleb(buf, i)
                 segoff += 8 + v
             elif op == 0xB0:
-                out.append((segs[seg]["vmaddr"] + segoff, ordinal, sym, addend, weak))
+                out.append(((segs[seg]["vmaddr"] + segoff) & 0xFFFFFFFFFFFFFFFF, ordinal, sym, addend, weak))
                 segoff += 8 + imm * 8
             elif op == 0xC0:
                 cnt, i = uleb(buf, i)
                 skip, i = uleb(buf, i)
                 for _ in range(cnt):
-                    out.append((segs[seg]["vmaddr"] + segoff, ordinal, sym, addend, weak))
+                    out.append(((segs[seg]["vmaddr"] + segoff) & 0xFFFFFFFFFFFFFFFF, ordinal, sym, addend, weak))
                     segoff += 8 + skip
             else:
                 raise ValueError(f"bind opcode {op:#x}")
