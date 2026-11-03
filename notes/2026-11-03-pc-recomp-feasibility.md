@@ -124,3 +124,13 @@ Rewired 會印「ControllerDataFiles is missing critical data!」，要和 Andro
 - **手把**：XInput 看得到手把（user 0），遊戲每格都有呼叫 `AGCGetController`，並把 0 號手把認成「Xbox Wireless Controller」；使用者回報沒反應，加了狀態變化的 log 待查。
 - 測試時要注意：自動送滑鼠／鍵盤會搶到使用者正在用的游標，使用者在用電腦時不要做。
 - 存檔（PlayerPrefs）在登錄檔 `HKCU\Software\WayForward Technologies\Marble Knights`；測教學時清掉，原本的備份在 `work/win/2026-11-03-playerprefs-backup.reg`。
+
+## Windows：操作與顯示（11-04）
+
+- `MarbleKnights.exe` 換成自己的啟動程式（`loader/win/launcher.c`）：呼叫 UnityPlayer 的 `UnityMain` 並加上 `-force-gles30`。直接點兩下原版播放器會用 D3D11，整個畫面變粉紅（只有 GLES3 著色器）。
+- 關閉遊戲：`il2cpp_shutdown` 不會返回（執行環境停 GC 與 guest 執行緒時卡住）；播放器最後才呼叫它，PlayerPrefs 已經寫好，所以直接結束行程。
+- 游標：iOS 版會隱藏、鎖定游標，Windows 上忽略 `Cursor.visible`／`lockState`。
+- **手把**：Rewired（iOS 版，平台寫死成 iOS）是從 Unity 的搖桿輸入讀手把、用 Unity iOS 的按鍵配置對應。現在 `GetJoystickNames`／`GetKeyInt`（搖桿鍵碼）／`GetAxis(Raw)("JoyNAxisM")` 都照 iOS 播放器回報 extended gamepad 的方式從 XInput 回答：名字 `[extended,wireless] joystick N by Xbox Wireless Controller`，A=14、B=13、X=15、Y=12、十字鍵 4–7、肩鍵 8/9、扳機 10/11、暫停=0，搖桿軸 1–4（Y 向下為正）。使用者確認可以玩。
+- Alt+Enter／F4：`Screen.SetResolution` 在全螢幕（螢幕大小）與 1280×720 視窗之間切換（使用者確認）。
+- AppleGameController 替代品不再把鍵盤當成永遠連著的 0 號手把（鍵盤由 Rewired 自己讀）；一直有手把可能讓遊戲停在手把模式、不接受觸控。觸控是否因此恢復待測。
+- 待查：傳送板的藍色光和地板有 Z-fighting 般的閃爍（推測：iOS 是 Metal 的浮點深度＋reversed Z，這裡是 GL 的 24-bit 深度，貼花的深度差不夠）；只在全螢幕時，第一關 Loading 前會閃一格壞掉的畫面。

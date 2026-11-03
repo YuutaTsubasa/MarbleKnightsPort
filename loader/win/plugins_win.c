@@ -152,11 +152,12 @@ static int own_window_focused(void) {
 static int key(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
 static float stick(SHORT v) { float f = v / 32767.0f; if (f < -1) f = -1; return (f > -0.24f && f < 0.24f) ? 0 : f; }
 
-// slot 0 = keyboard + XInput user 0 (always present), slots 1-3 = XInput users 1-3 when connected
+// slots = XInput users 0-3 that are connected. The keyboard is not a pad here: Rewired reads it
+// itself, and an always-connected pad kept the game in controller mode (no touch controls).
 static unsigned agc_slots(void) {
-    unsigned m = 1;
+    unsigned m = 0;
     xi_state s;
-    for (DWORD u = 1; g_xinput_get && u < 4; u++) if (g_xinput_get(u, &s) == 0) m |= 1u << u;
+    for (DWORD u = 0; g_xinput_get && u < 4; u++) if (g_xinput_get(u, &s) == 0) m |= 1u << u;
     return m;
 }
 static apple_controller pad_state(int slot) {
@@ -173,17 +174,6 @@ static apple_controller pad_state(int slot) {
         p.lb = !!(b & 0x100); p.rb = !!(b & 0x200); p.lt = s.pad.lt > 128; p.rt = s.pad.rt > 128;
         p.menu = !!(b & 0x10); p.options = !!(b & 0x20);
     }
-    if (slot == 0 && own_window_focused()) {
-        // arrows / WASD = left stick and d-pad, Enter / Space = A, Esc / Backspace = B, X = X, C = Y,
-        // Q / E = shoulders, 1 / 3 = triggers, Tab = options, P = menu
-        float kx = (key(VK_RIGHT) || key('D') ? 1.0f : 0) - (key(VK_LEFT) || key('A') ? 1.0f : 0);
-        float ky = (key(VK_UP) || key('W') ? 1.0f : 0) - (key(VK_DOWN) || key('S') ? 1.0f : 0);
-        if (kx) { p.lx = kx; p.dx = kx; }
-        if (ky) { p.ly = ky; p.dy = ky; }
-        p.a |= (key(VK_RETURN) && !key(VK_MENU)) || key(VK_SPACE); p.b |= key(VK_ESCAPE) || key(VK_BACK);
-        p.x |= key('X'); p.y |= key('C'); p.lb |= key('Q'); p.rb |= key('E');
-        p.lt |= key('1'); p.rt |= key('3'); p.options |= key(VK_TAB); p.menu |= key('P');
-    }
     p.any = p.a | p.b | p.x | p.y | p.lb | p.rb | p.lt | p.rt | p.menu | p.options;
     return p;
 }
@@ -196,7 +186,7 @@ static void agc_initialize(cpu *c) {
     if (!x) x = LoadLibraryA("xinput9_1_0.dll");
     g_xinput_get = x ? (DWORD (WINAPI *)(DWORD, xi_state *))GetProcAddress(x, "XInputGetState") : NULL;
     g_agc_ready = 1;
-    mk_log("AppleGameController(windows) initialize: XInput %s, keyboard on pad 0", g_xinput_get ? "found" : "missing");
+    mk_log("AppleGameController(windows) initialize: XInput %s", g_xinput_get ? "found" : "missing");
 }
 static void agc_noop(cpu *c) { (void)c; }
 static void agc_count(cpu *c) { RET(g_agc_known); }
