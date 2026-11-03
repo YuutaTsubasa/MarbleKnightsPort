@@ -115,3 +115,12 @@ Android 版本來就是跑 iOS 自己的 IL2CPP 執行環境（在 `__text` 裡�
 Rewired 會印「ControllerDataFiles is missing critical data!」，要和 Android 版的 log 比對是不是本來就有。
 
 還沒驗證：主選單之後的流程、實際關卡、XInput 手把（只測了鍵盤）、聲音、存檔讀回、效能、GC 掃描。
+
+## Windows：聲音、3D、觸控（2026-11-03 深夜～11-04）
+
+- **聲音**：`loader/win/fmod_win.c`，跟 Android 一樣讓 FMOD 用 NOSOUND 混音，主 channel group 開頭放一個擷取 DSP 把混音寫進環形緩衝區，waveOut 執行緒播放（FMOD 2.00.10，24 kHz）。DSP 的 read 是 host callback（只有整數／指標參數）。使用者確認有聲音。
+- **3D 全黑**：場景設定正常（`MK_DUMP_RENDER=1` 用引擎 icall 印霧、環境光、太陽光），原因是貼圖：iOS 資料大多是 PVRTC 4bpp，桌機 GPU 不支援，Windows 播放器在 CPU 解壓時有 mipmap 的貼圖會變黑（只剩高光，角色像一堆點點）。`tools/win_textures.py` 在建置時把 bundle 裡的 PVRTC 全部解成 RGBA32（含每一層 mip，解碼器 `tools/pvrtc_decode.c`，用 ctypes 呼叫）：210 個 bundle、1,818 張；`resources.assets`／`sharedassets0.assets` 另外 28 張（沒有 type tree，借 bundle 的 Texture2D 樹），放在 `work/win/patched-data`，`build_win.py` 會優先用。StreamingAssets 原本是硬連結到 Android 資料，轉換時寫新檔取代連結，原檔不動。教學關卡、標題的藍色格子背景都正常了。
+- **觸控**：遊戲讀 `Input.touchCount`／`GetTouch`，Windows 的滑鼠不會產生觸控。在註冊 icall 時把這兩個換成包裝：有真的觸控就照引擎的，否則滑鼠左鍵當 0 號手指（每格推進 Began／Moved／Stationary／Ended），`touchSupported` 回 true。log 確認觸控事件有送出；遊戲裡實際效果待使用者測。
+- **手把**：XInput 看得到手把（user 0），遊戲每格都有呼叫 `AGCGetController`，並把 0 號手把認成「Xbox Wireless Controller」；使用者回報沒反應，加了狀態變化的 log 待查。
+- 測試時要注意：自動送滑鼠／鍵盤會搶到使用者正在用的游標，使用者在用電腦時不要做。
+- 存檔（PlayerPrefs）在登錄檔 `HKCU\Software\WayForward Technologies\Marble Knights`；測教學時清掉，原本的備份在 `work/win/2026-11-03-playerprefs-backup.reg`。

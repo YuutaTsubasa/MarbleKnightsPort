@@ -657,10 +657,12 @@ static int32_t get_platform_ios(void) { return 8; }
 static double video_time_ended(void *player) { (void)player; return 1e9; }
 static int gl_renderer(void) { const char *cl = GetCommandLineA(); return strstr(cl, "-force-gl") != NULL; }
 
+void *mk_input_icall(const char *name, void *fn);
 __declspec(dllexport) void il2cpp_add_internal_call(const char *name, void *method) {
     mk_runtime_start();
     if (!strcmp(name, "UnityEngine.Application::get_platform")) method = (void *)get_platform_ios;
     if (!strcmp(name, "UnityEngine.Video.VideoPlayer::get_time") && gl_renderer()) method = (void *)video_time_ended;
+    method = mk_input_icall(name, method);  // plugins_win.c: the mouse as a touch
     real_il2cpp_add_internal_call((uintptr_t)name, (uintptr_t)mk_host_callback(method, _strdup(name)));
 }
 __declspec(dllexport) void il2cpp_set_data_dir(const char *path) {

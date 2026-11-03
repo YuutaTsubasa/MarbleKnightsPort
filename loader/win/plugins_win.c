@@ -332,3 +332,79 @@ void mk_plugins_install(void) {
     for (size_t i = 0; i < sizeof(fns) / sizeof(fns[0]); i++) mk_override_function(fns[i].off, fns[i].fn, fns[i].name);
     mk_log("plugins: %zu native functions replaced, saves in %s", sizeof(fns) / sizeof(fns[0]), g_save_dir);
 }
+
+// ---- touch: the left mouse button acts as one finger ----
+// The game is a touch game (iOS); on Windows the engine reports no touches for the mouse. Input's
+// touch icalls are wrapped: with real touches (a touchscreen) the engine's answer is passed on,
+// otherwise the mouse becomes finger 0, with phases advanced once per frame.
+typedef struct {  // UnityEngine.Touch (2019.4)
+    int32_t finger_id;
+    float pos[2], raw_pos[2], delta[2], time_delta;
+    int32_t tap_count, phase, type;
+    float pressure, max_pressure, radius, radius_var, altitude, azimuth;
+} touch;
+_Static_assert(sizeof(touch) == 68, "Touch");
+static int32_t (*g_touch_count)(void);
+static void (*g_get_touch)(int32_t, touch *);
+static void (*g_mouse_pos)(float *);
+static uint8_t (*g_mouse_button)(int32_t);
+static int32_t (*g_frame_count)(void);
+static touch g_mtouch;
+static int g_mtouch_active, g_mtouch_frame = -1;
+
+static void mouse_touch_update(void) {
+    int f = g_frame_count ? g_frame_count() : 0;
+    if (f == g_mtouch_frame) return;
+    g_mtouch_frame = f;
+    float v[3] = { 0 };
+    if (g_mouse_pos) g_mouse_pos(v);
+    int down = g_mouse_button && (g_mouse_button(0) & 0xff) && own_window_focused();
+    if (down) {
+        float dx = v[0] - g_mtouch.pos[0], dy = v[1] - g_mtouch.pos[1];
+        if (!g_mtouch_active || g_mtouch.phase == 3) {  // Began
+            memset(&g_mtouch, 0, sizeof(g_mtouch));
+            g_mtouch.raw_pos[0] = v[0]; g_mtouch.raw_pos[1] = v[1];
+            g_mtouch.phase = 0; g_mtouch.tap_count = 1; dx = dy = 0;
+        } else {
+            g_mtouch.phase = (dx || dy) ? 1 : 2;  // Moved / Stationary
+        }
+        g_mtouch.pos[0] = v[0]; g_mtouch.pos[1] = v[1];
+        g_mtouch.delta[0] = dx; g_mtouch.delta[1] = dy;
+        g_mtouch.time_delta = 1 / 60.0f;
+        g_mtouch.pressure = g_mtouch.max_pressure = 1;
+        g_mtouch_active = 1;
+    } else if (g_mtouch_active && g_mtouch.phase != 3) {
+        g_mtouch.phase = 3;  // Ended, reported for one frame
+        g_mtouch.delta[0] = g_mtouch.delta[1] = 0;
+    } else {
+        g_mtouch_active = 0;
+    }
+    static int last_phase = -1;
+    int ph = g_mtouch_active ? g_mtouch.phase : -1;
+    if (ph != last_phase && ph != 2 && ph != 1) mk_log("mouse touch: phase %d at (%.0f, %.0f) frame %d", ph, g_mtouch.pos[0], g_mtouch.pos[1], f);
+    last_phase = ph;
+}
+static int32_t touch_count(void) {
+    int32_t n = g_touch_count ? g_touch_count() : 0;
+    if (n) return n;
+    mouse_touch_update();
+    return g_mtouch_active;
+}
+static void get_touch(int32_t i, touch *t) {
+    if (g_touch_count && g_touch_count() > 0) { g_get_touch(i, t); return; }
+    mouse_touch_update();
+    *t = g_mtouch;
+}
+static uint8_t touch_supported(void) { return 1; }
+
+// called for each icall the engine registers; returns the implementation to register
+void *mk_input_icall(const char *name, void *fn) {
+    if (!strcmp(name, "UnityEngine.Input::get_touchCount")) { g_touch_count = fn; return (void *)touch_count; }
+    if (!strcmp(name, "UnityEngine.Input::GetTouch_Injected")) { g_get_touch = fn; return (void *)get_touch; }
+    if (!strcmp(name, "UnityEngine.Input::get_touchSupported")) return (void *)touch_supported;
+    if (!strcmp(name, "UnityEngine.Input::get_mousePosition_Injected")) g_mouse_pos = fn;
+    if (!strcmp(name, "UnityEngine.Input::GetMouseButton")) g_mouse_button = fn;
+    if (!strcmp(name, "UnityEngine.Time::get_frameCount")) g_frame_count = fn;
+    if (!strncmp(name, "UnityEngine.Input::GetMouseButton", 33)) mk_log("icall %s", name);
+    return fn;
+}
