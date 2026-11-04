@@ -557,20 +557,15 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x18f9430, "VariableJoystick.Start" },
     { 0x1e51338, "RewiredPointerInputModule.GetTouchPointerEventData" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
 };
-// name of a UnityEngine.Object (component: its GameObject's), for the traces below
-static const char *object_name(uint64_t obj, int component, char *out, int n) {
-    static void *(*get_name)(void *), *(*get_go)(void *);
+// name of a UnityEngine.Object (a component's name is its GameObject's), for the traces below
+static const char *object_name(uint64_t obj, char *out, int n) {
+    static void *(*get_name)(void *);
     if (!get_name) get_name = (void *(*)(void *))mk_find_icall("UnityEngine.Object::GetName");
-    if (!get_go) get_go = (void *(*)(void *))mk_find_icall("UnityEngine.Component::get_gameObject");
     out[0] = 0;
-    void *o = (void *)(uintptr_t)obj;
-    if (o && component && get_go) o = get_go(o);
-    if (o && get_name) managed_ascii(get_name(o), out, n);
+    if (obj && get_name) managed_ascii(get_name((void *)(uintptr_t)obj), out, n);
     return out;
 }
 void mk_trace(uint64_t off, cpu *c) {
-    // while the mouse finger is down: every event target (ExecuteEvents.Execute) and every
-    // graphic the raycaster tests (Graphic.Raycast), by name
     // On the frame a press begins: every event target (ExecuteEvents.Execute), every canvas the
     // raycasters test (GraphicRaycaster.Raycast(canvas, camera, ...)) and every graphic tested in it
     // (Graphic.Raycast), by name.
@@ -580,25 +575,21 @@ void mk_trace(uint64_t off, cpu *c) {
         logged++;
         char nm[96], cam[96];
         if (off == 0x246d56c)
-            mk_log("trace GraphicRaycaster.Raycast canvas '%s' camera '%s' at (%.0f, %.0f) frame %d", object_name(X(0), 1, nm, sizeof(nm)),
-                   object_name(X(1), 1, cam, sizeof(cam)), c->v[0].f[0], c->v[1].f[0], g_frame_count ? g_frame_count() : -1);
+            mk_log("trace GraphicRaycaster.Raycast canvas '%s' camera '%s' at (%.0f, %.0f) frame %d", object_name(X(0), nm, sizeof(nm)),
+                   object_name(X(1), cam, sizeof(cam)), c->v[0].f[0], c->v[1].f[0], g_frame_count ? g_frame_count() : -1);
         else
             mk_log("trace %s '%s' frame %d", off == 0x24559bc ? "ExecuteEvents.Execute on" : "Graphic.Raycast",
-                   object_name(X(0), off == 0x246b7f0, nm, sizeof(nm)), g_frame_count ? g_frame_count() : -1);
+                   object_name(X(0), nm, sizeof(nm)), g_frame_count ? g_frame_count() : -1);
         return;
     }
     if (off == 0x18f8eec) {  // UIJoystick.get_Direction: which joystick, and is it active
         static unsigned n;
-        static uint8_t (*active)(void *), (*enabled)(void *);
-        static void *(*get_go)(void *);
+        static uint8_t (*enabled)(void *);
         if (n++ % 600) return;
-        if (!active) active = (uint8_t (*)(void *))mk_find_icall("UnityEngine.GameObject::get_activeInHierarchy");
         if (!enabled) enabled = (uint8_t (*)(void *))mk_find_icall("UnityEngine.Behaviour::get_isActiveAndEnabled");
-        if (!get_go) get_go = (void *(*)(void *))mk_find_icall("UnityEngine.Component::get_gameObject");
         char nm[96];
-        void *go = get_go && X(0) ? get_go((void *)(uintptr_t)X(0)) : NULL;
-        mk_log("trace UIJoystick '%s' activeInHierarchy=%d isActiveAndEnabled=%d frame %d", object_name(X(0), 1, nm, sizeof(nm)),
-               go && active ? active(go) : -1, enabled && X(0) ? enabled((void *)(uintptr_t)X(0)) : -1, g_frame_count ? g_frame_count() : -1);
+        mk_log("trace UIJoystick '%s' isActiveAndEnabled=%d frame %d", object_name(X(0), nm, sizeof(nm)),
+               enabled && X(0) ? enabled((void *)(uintptr_t)X(0)) : -1, g_frame_count ? g_frame_count() : -1);
         return;
     }
     if ((off == 0x1e56718 || off == 0x245be48) && ((X(2) & 0xff) || (X(3) & 0xff))) {  // ProcessTouchPress(data, pressed, released)
