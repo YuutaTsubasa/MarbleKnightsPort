@@ -365,6 +365,7 @@ static uint8_t (*g_mouse_button)(int32_t);
 static int32_t (*g_frame_count)(void);
 static touch g_mtouch;
 static int g_mtouch_active, g_mtouch_frame = -1;
+static int g_mouse_presses;  // mouse "touches" begun (mk_follow_last_device)
 
 static void mouse_touch_update(void) {
     int f = g_frame_count ? g_frame_count() : 0;
@@ -379,6 +380,7 @@ static void mouse_touch_update(void) {
             memset(&g_mtouch, 0, sizeof(g_mtouch));
             g_mtouch.raw_pos[0] = v[0]; g_mtouch.raw_pos[1] = v[1];
             g_mtouch.phase = 0; g_mtouch.tap_count = 1; dx = dy = 0;
+            g_mouse_presses++;
         } else {
             g_mtouch.phase = (dx || dy) ? 1 : 2;  // Moved / Stationary
         }
@@ -546,6 +548,52 @@ void mk_nearest_aspect(cpu *c) {
     for (int i = 1; i < 5; i++)
         if (fabsf(ratios[i] - aspect) < fabsf(best - aspect)) best = ratios[i];
     X(0) = fabsf(target - best) < 0.001f;
+}
+
+// Call a translated function from a runtime hook running inside translated code: the caller's
+// registers are kept and restored, the callee gets its own stack below the caller's sp.
+static uint64_t guest_call(cpu *c, void (*fn)(cpu *), uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
+    cpu saved = *c;
+    X(0) = a0; X(1) = a1; X(2) = a2; X(3) = a3;
+    c->x[31] = (saved.x[31] - 1024) & ~15ull;
+    c->x[30] = 0;
+    fn(c);
+    uint64_t r = X(0);
+    *c = saved;
+    return r;
+}
+void f_1d666d0(cpu *c);  // BootstrapTitleScreen.IsAnyButtonPressed(out Controller): a pad or touch-button press
+void f_19a5d28(cpu *c);  // UI_ControllerWidget.AssignPlayerController(player, controller, bool)
+void f_19a5a54(cpu *c);  // UI_ControllerWidget.ForceTiltController(): 1P takes the touch controls
+void f_1901280(cpu *c);  // CustomTiltControl.GetIsInMenu() (static): a menu scene is loaded
+void f_1fdd67c(cpu *c);  // Rewired.Controller.get_name
+
+// Entry of UI_ControllerWidget.Update (tools/a64toc.py ENTRY_HOOKS), once a frame. In single-player
+// play (one used controller, no menu scene: the join screens keep their own handling) 1P follows the
+// device last used, as on a PC one expects: a pad button takes the pad, a mouse press the touch controls.
+void mk_follow_last_device(cpu *c) {
+    static int seen_presses;
+    uint8_t *widget = (uint8_t *)(uintptr_t)X(0);
+    int mouse = g_mouse_presses != seen_presses;
+    seen_presses = g_mouse_presses;
+    uint8_t *used = widget ? *(uint8_t **)(widget + 0x120) : NULL;  // UsedControllers (List<Controller>)
+    if (!used || *(int32_t *)(used + 0x18) != 1) return;
+    uint8_t *items = *(uint8_t **)(used + 0x10);
+    uint64_t cur = items ? *(uint64_t *)(items + 0x20) : 0;
+    if (!cur || guest_call(c, f_1901280, 0, 0, 0, 0) & 0xff) return;
+    char name[64];
+    managed_ascii((void *)(uintptr_t)guest_call(c, f_1fdd67c, cur, 0, 0, 0), name, sizeof(name));
+    int touch = strcmp(name, "Tilt Controller") == 0;
+    uint64_t pressed = 0;
+    if ((guest_call(c, f_1d666d0, 0, (uint64_t)(uintptr_t)&pressed, 0, 0) & 0xff) && pressed && pressed != cur) {
+        char pn[64];
+        managed_ascii((void *)(uintptr_t)guest_call(c, f_1fdd67c, pressed, 0, 0, 0), pn, sizeof(pn));
+        mk_log("1P follows the last device: '%s' -> '%s'", name, pn);
+        guest_call(c, f_19a5d28, (uint64_t)(uintptr_t)widget, 0, pressed, 0);
+    } else if (mouse && !touch) {
+        mk_log("1P follows the last device: '%s' -> touch (mouse press)", name);
+        guest_call(c, f_19a5a54, (uint64_t)(uintptr_t)widget, 0, 0, 0);
+    }
 }
 
 // ---- debugging: entries of functions translated with A64TOC_TRACE (tools/a64toc.py) ----

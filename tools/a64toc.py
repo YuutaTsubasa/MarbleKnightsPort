@@ -47,6 +47,10 @@ CALL_SUBST = {0x1d6614c: "{ void mk_title_button_controller(cpu *c); mk_title_bu
 CALL_SUBST.update({a: "{ void mk_nearest_aspect(cpu *c); mk_nearest_aspect(c); }"
                    for a in (0x1d68154, 0x1d68224, 0x1d682f0, 0x1d683c8, 0x1d684b0, 0x1d68500)})
 IOS_PLATFORM_CALLERS = {0x1902fbc, 0x1900568, 0x1904d84, 0x1905644, 0x1905368, 0x1905070}
+# Functions whose entry first calls a runtime function with the same cpu (Windows additions to the game).
+# UI_ControllerWidget.Update runs once a frame: in single-player play, 1P follows the device last used
+# (a pad press takes the pad, a mouse press the touch controls); the iOS game only switches in settings.
+ENTRY_HOOKS = {0x19aa3e0: "mk_follow_last_device"}
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from macho import MachO  # noqa: E402
@@ -1415,6 +1419,9 @@ class Fn:
         if self.start in TRACE:  # A64TOC_TRACE: log entries (the runtime's mk_trace)
             out[-1:-1] = ["void mk_trace(uint64_t off, cpu *c);"]
             out.append(f"    mk_trace({self.start:#x}, c);")
+        if self.start in ENTRY_HOOKS:
+            out[-1:-1] = [f"void {ENTRY_HOOKS[self.start]}(cpu *c);"]
+            out.append(f"    {ENTRY_HOOKS[self.start]}(c);")
         for item in self.body:
             if isinstance(item, tuple):
                 if item[1] in self.labels:
