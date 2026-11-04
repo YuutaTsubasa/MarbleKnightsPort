@@ -588,6 +588,8 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x245e85c, "Button.OnPointerClick" }, { 0x245e7bc, "Button.Press" }, { 0x245e884, "Button.OnSubmit" },
     { 0x2490a70, "Selectable.OnPointerDown" }, { 0x2490ce4, "Selectable.OnPointerUp" }, { 0x1d680dc, "BootstrapVideo.CheckAspectRatio" },
     { 0x1e51338, "RewiredPointerInputModule.GetTouchPointerEventData" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
+    { 0x23f2d74, "UnityEvent.Invoke" }, { 0x249cf40, "UISystemProfilerApi.AddMarker" }, { 0x1d66554, "BootstrapTitleScreen.Update" },
+    { 0x1d666d0, "BootstrapTitleScreen.IsAnyButtonPressed" }, { 0x1d66d00, "BootstrapTitleScreen.HandlePressAnyButton" },
 };
 void mk_trace(uint64_t off, cpu *c) {
     // UI raycasts (findings in docs/notes/2026-11-03-pc-recomp-feasibility.md): no longer logged. Naming
@@ -604,6 +606,22 @@ void mk_trace(uint64_t off, cpu *c) {
         mk_log("trace %s compares '%s' with '%s' frame %d", off == 0x19a4a38 ? "IsTiltControllerUsed" : off == 0x19a5c20 ? "ForceTiltController" : off == 0x19a9c48 ? "FindTiltController" :
                off == 0x1d299a8 ? "AssignControllerFromTitleScreen (!=)" : "AssignControllerFromTitleScreen (==)",
                a, b, g_frame_count ? g_frame_count() : -1);
+        return;
+    }
+    // BaseInvokableCall.AllowInvoke(delegate): every UnityEvent listener passes here before it runs.
+    // Name the delegate's method and target class from the il2cpp structures (memory reads only):
+    // Il2CppDelegate +0x20 target, +0x28 MethodInfo; MethodInfo +0x10 name, +0x18 class; class +0x10 name.
+    if (off == 0x23f1614) {
+        static unsigned n;
+        if (n++ >= 100) return;
+        const char *mname = "?", *mclass = "?", *tclass = "-";
+        uint8_t *d = (uint8_t *)(uintptr_t)X(0);
+        uint8_t *mi = d ? *(uint8_t **)(d + 0x28) : NULL;
+        uint8_t *tg = d ? *(uint8_t **)(d + 0x20) : NULL;
+        if (mi && *(const char **)(mi + 0x10)) mname = *(const char **)(mi + 0x10);
+        if (mi && *(uint8_t **)(mi + 0x18)) mclass = *(const char **)(*(uint8_t **)(mi + 0x18) + 0x10);
+        if (tg && *(uint8_t **)tg) tclass = *(const char **)((*(uintptr_t *)tg & ~(uintptr_t)1) + 0x10);
+        mk_log("trace UnityEvent listener %s.%s (target %s) frame %d", mclass, mname, tclass, g_frame_count ? g_frame_count() : -1);
         return;
     }
     if ((off == 0x1e56718 || off == 0x245be48) && ((X(2) & 0xff) || (X(3) & 0xff))) {  // ProcessTouchPress(data, pressed, released)
