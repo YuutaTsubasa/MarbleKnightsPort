@@ -765,7 +765,7 @@ void mk_trace(uint64_t off, cpu *c) {
     // Il2CppDelegate +0x20 target, +0x28 MethodInfo; MethodInfo +0x10 name, +0x18 class; class +0x10 name.
     if (off == 0x23f1614) {
         static unsigned n;
-        if (n++ >= 100) return;
+        if (n >= 400) return;
         const char *mname = "?", *mclass = "?", *tclass = "-";
         uint8_t *d = (uint8_t *)(uintptr_t)X(0);
         uint8_t *mi = d ? *(uint8_t **)(d + 0x28) : NULL;
@@ -773,6 +773,9 @@ void mk_trace(uint64_t off, cpu *c) {
         if (mi && *(const char **)(mi + 0x10)) mname = *(const char **)(mi + 0x10);
         if (mi && *(uint8_t **)(mi + 0x18)) mclass = *(const char **)(*(uint8_t **)(mi + 0x18) + 0x10);
         if (tg && *(uint8_t **)tg) tclass = *(const char **)((*(uintptr_t *)tg & ~(uintptr_t)1) + 0x10);
+        // the per-frame colour tweens and button sounds would use up the budget
+        if (!strcmp(mname, "SetColor") || !strcmp(mclass, "UI_ButtonSFX") || !strncmp(mname, "SetSpriteTo", 11)) return;
+        n++;
         mk_log("trace UnityEvent listener %s.%s (target %s) frame %d", mclass, mname, tclass, g_frame_count ? g_frame_count() : -1);
         return;
     }
