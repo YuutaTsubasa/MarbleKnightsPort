@@ -567,6 +567,7 @@ void f_19a5d28(cpu *c);  // UI_ControllerWidget.AssignPlayerController(player, c
 void f_19a5a54(cpu *c);  // UI_ControllerWidget.ForceTiltController(): 1P takes the touch controls
 void f_1901280(cpu *c);  // CustomTiltControl.GetIsInMenu() (static): a menu scene is loaded
 void f_1fdd67c(cpu *c);  // Rewired.Controller.get_name
+void f_1fdd954(cpu *c);  // Rewired.Controller.get_type (0 keyboard, 1 mouse, 2 joystick, 20 custom)
 
 // Entry of UI_ControllerWidget.Update (tools/a64toc.py ENTRY_HOOKS), once a frame. In single-player
 // play (one used controller, no menu scene: the join screens keep their own handling) 1P follows the
@@ -585,7 +586,10 @@ void mk_follow_last_device(cpu *c) {
     managed_ascii((void *)(uintptr_t)guest_call(c, f_1fdd67c, cur, 0, 0, 0), name, sizeof(name));
     int touch = strcmp(name, "Tilt Controller") == 0;
     uint64_t pressed = 0;
-    if ((guest_call(c, f_1d666d0, 0, (uint64_t)(uintptr_t)&pressed, 0, 0) & 0xff) && pressed && pressed != cur) {
+    // IsAnyButtonPressed skips the mouse and Unity joysticks (the game reads pads through its Apple
+    // controller, a custom controller) but not the keyboard, which only takes keys like Alt+Enter here
+    if ((guest_call(c, f_1d666d0, 0, (uint64_t)(uintptr_t)&pressed, 0, 0) & 0xff) && pressed && pressed != cur &&
+        (int32_t)guest_call(c, f_1fdd954, pressed, 0, 0, 0) != 0) {
         char pn[64];
         managed_ascii((void *)(uintptr_t)guest_call(c, f_1fdd67c, pressed, 0, 0, 0), pn, sizeof(pn));
         mk_log("1P follows the last device: '%s' -> '%s'", name, pn);
@@ -670,6 +674,28 @@ void mk_trace(uint64_t off, cpu *c) {
     if (off == 0x24559bc || off == 0x246b7f0 || off == 0x246d56c || off == 0x246c634 || off == 0x18f8eec) return;
     // string comparisons (A64TOC_TRACE_CALLS): IsTiltControllerUsed's controller name == the tilt
     // controller's name, and the name matches in ForceTiltController / FindTiltController
+    // ControllerSelection.CheckNewPlayerInput's name comparisons (A64TOC_TRACE_CALLS)
+    if (off == 0x1d2785c || off == 0x1d278e0 || off == 0x1d27914 || off == 0x1d27938 || off == 0x1d2795c || off == 0x1d27994 || off == 0x1d27a18) {
+        static unsigned n;
+        if (n++ >= 300) return;
+        char a[96], b[96];
+        managed_ascii((void *)(uintptr_t)X(0), a, sizeof(a));
+        managed_ascii((void *)(uintptr_t)X(1), b, sizeof(b));
+        mk_log("trace CheckNewPlayerInput (%#llx) compares '%s' with '%s' frame %d", (unsigned long long)off, a, b, g_frame_count ? g_frame_count() : -1);
+        return;
+    }
+    // the controller argument of the controller-selection checks (x1), by name (a managed field read)
+    if (off == 0x1d223f0 || off == 0x1d2dff8 || off == 0x19a5d28) {
+        static unsigned n;
+        if (n++ >= 300) return;
+        uint64_t ctl = off == 0x19a5d28 ? X(2) : X(1);
+        char nm[96] = "-";
+        if (ctl) managed_ascii((void *)(uintptr_t)guest_call(c, f_1fdd67c, ctl, 0, 0, 0), nm, sizeof(nm));
+        mk_log("trace %s controller '%s' (%#llx) x1=%#llx frame %d", off == 0x1d223f0 ? "ControllerSelection.CheckControllerAlreadyUsed" :
+               off == 0x1d2dff8 ? "ControllerSelection.CheckControllerJustUnassigned" : "UI_ControllerWidget.AssignPlayerController",
+               nm, (unsigned long long)ctl, (unsigned long long)X(1), g_frame_count ? g_frame_count() : -1);
+        return;
+    }
     if (off == 0x19a4a38 || off == 0x19a5c20 || off == 0x19a9c48 || off == 0x1d299a8 || off == 0x1d29bac) {
         static unsigned n;
         if (n++ >= 300) return;
