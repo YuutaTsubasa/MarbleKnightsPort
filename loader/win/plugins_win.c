@@ -6,6 +6,7 @@
 // Managed callbacks the plugins received are guest addresses, called with mk_guest_enter.
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -537,6 +538,16 @@ void mk_title_button_controller(cpu *c) {
     X(0) = strcmp(name, "Tilt Controller") == 0;
 }
 
+// BootstrapVideo.CheckAspectRatio's CloseEnough(target s0, aspect s1, tolerance s2) (tools/a64toc.py
+// CALL_SUBST): true when target is the clip ratio nearest to the window's, so any window size gets one.
+void mk_nearest_aspect(cpu *c) {
+    static const float ratios[] = { 1.33f, 1.43f, 1.6f, 1.77f, 2.16f };
+    float target = c->v[0].f[0], aspect = c->v[1].f[0], best = ratios[0];
+    for (int i = 1; i < 5; i++)
+        if (fabsf(ratios[i] - aspect) < fabsf(best - aspect)) best = ratios[i];
+    X(0) = fabsf(target - best) < 0.001f;
+}
+
 // ---- debugging: entries of functions translated with A64TOC_TRACE (tools/a64toc.py) ----
 // Logs the first calls of each, then every power of two; x0 is `this`, x1 the first argument,
 // s0-s2 the first float arguments.
@@ -572,6 +583,10 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x1d29528, "ControllerSelection.AutoAssignControllers" }, { 0x1d275f4, "ControllerSelection.CheckNewPlayerInput" },
     { 0x1d39114, "ControllerSelection_ControllerOption.AssignFirstTiltController" },
     { 0x1d29f30, "ControllerSelection.CheckAutoAssignFromTitleScreen" }, { 0x1d28fd0, "ControllerSelection.InitializeAssignedControllers" },
+    { 0x1d65f0c, "BootstrapTitleScreen.LoadSceneViaButton" }, { 0x1d662e4, "BootstrapTitleScreen.CoWaitToLoadScene" },
+    { 0x1d66380, "BootstrapTitleScreen.LoadScene" }, { 0x1d66a3c, "BootstrapTitleScreen.SetTitleScreenController" },
+    { 0x245e85c, "Button.OnPointerClick" }, { 0x245e7bc, "Button.Press" }, { 0x245e884, "Button.OnSubmit" },
+    { 0x2490a70, "Selectable.OnPointerDown" }, { 0x2490ce4, "Selectable.OnPointerUp" }, { 0x1d680dc, "BootstrapVideo.CheckAspectRatio" },
     { 0x1e51338, "RewiredPointerInputModule.GetTouchPointerEventData" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
 };
 void mk_trace(uint64_t off, cpu *c) {

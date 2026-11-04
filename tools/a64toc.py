@@ -41,6 +41,11 @@ APPLICATION_GET_PLATFORM = 0x23e7b08
 # has no keyboard). Our clicks are touches, so the String.Contains there picks the touch controller
 # ("Tilt Controller") instead; a key or pad press at the title takes another path.
 CALL_SUBST = {0x1d6614c: "{ void mk_title_button_controller(cpu *c); mk_title_button_controller(c); }"}
+# BootstrapVideo.CheckAspectRatio picks the Apple Arcade clip whose aspect ratio is within 0.01 of the
+# screen's (1.33, 1.43, 1.6, 1.77, 2.16: iOS devices); a window matches none and the screen stays black.
+# Its CloseEnough(target, aspect, tolerance) calls answer "target is the nearest of the five" instead.
+CALL_SUBST.update({a: "{ void mk_nearest_aspect(cpu *c); mk_nearest_aspect(c); }"
+                   for a in (0x1d68154, 0x1d68224, 0x1d682f0, 0x1d683c8, 0x1d684b0, 0x1d68500)})
 IOS_PLATFORM_CALLERS = {0x1902fbc, 0x1900568, 0x1904d84, 0x1905644, 0x1905368, 0x1905070}
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
