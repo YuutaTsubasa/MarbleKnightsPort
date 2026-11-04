@@ -84,6 +84,7 @@ assets/bin/Data   iOS 的 Data（序列化檔的平台欄位改成 Android、著
 11. **Mach thread／semaphore**：Boehm GC 在 Darwin 上用 `thread_suspend`／`thread_get_state` 停住其他執行緒 → 用即時訊號＋`ucontext` 模擬（已實作，還沒在多執行緒 GC 下壓力測試）。`dispatch_semaphore_*` 用 POSIX semaphore。
 12. **例外處理**：Mach-O 用 compact unwind，Android 的 libunwind 只讀 DWARF。我們把 111,927 個函式的 compact unwind 轉成 DWARF FDE（4.5 MB），做成 `.eh_frame_hdr` 二分搜尋表，再在 `dl_iterate_phdr` 裡多回報一個假模組。personality 用 NDK 的 `__gxx_personality_v0`，LSDA（`__gcc_except_tab`）格式相同可以直接用。
 13. `_dyld_*`、`getsectbynamefromheader_64`：讓 Boehm GC 把 `UnityFramework` 的 `__DATA` 當成根集合掃描。
+    - Windows 重編譯版另外要注意：Boehm 對每條執行緒只掃一段 `[sp, 堆疊底)`。guest 堆疊如果跟 host 堆疊分開，host 框架（Unity 原生程式拿著的受控指標）、外層 `cpu` 結構與 host 暫存器都會漏掉，活的物件會被回收。所以 guest 堆疊要從 host 堆疊切出來，`pthread_get_stackaddr_np` 與 `thread_get_state` 回報 host 的堆疊與暫存器（見 `docs/notes/2026-11-03-pc-recomp-feasibility.md`，11-05）。
 
 ## 7. 剩下的工作與估計
 

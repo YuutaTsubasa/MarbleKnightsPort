@@ -147,3 +147,25 @@ Rewired 會印「ControllerDataFiles is missing critical data!」，要和 Andro
 - **觸控的真正原因（追蹤確認）**：關卡裡 `iOSMobileHUD.Start`、`UIJoystick.Start`、`CustomTiltControl.SetUIJoystick` 都沒被呼叫，`CustomTiltControl.OnInputUpdate` 每格在跑但拿不到搖桿。`CustomTiltControl.Start` 與 `iOSAttackButton.OnEnable` 等 iOS 控制元件會先看 `Application.platform`，Windows 播放器回 WindowsPlayer，觸控介面就不建立。不能讓整個遊戲以為是 iOS（`SaveLoadManager.IdentifyPlatform` 對 iPhone 走另一套存檔），所以只有這 6 個函式裡呼叫 `Application.get_platform` 的地方由轉換器直接填 8（IPhonePlayer）。轉換後的程式 `bl` 時 x30 填 0，沒辦法在執行期看是誰呼叫的。
 - Apple Arcade 標誌：使用者回報全螢幕會顯示、視窗化會黑著卡住（點一下跳到下一個）。`BootstrapAppleArcade` 是依 `Camera.aspect` 和 5 個比例（容許 0.01）挑圖片（`Image.set_sprite`），不是影片；視窗的長寬比可能對不上。已加追蹤（`CloseEnough` 的參數）待下次 log 確認。
 
+
+## Windows：標題點擊與 GC 掃不到 host 堆疊（11-04～11-05）
+
+- **Apple Arcade 標誌（視窗化）**：視窗比例約 1.94，對不上 iOS 準備的五種比例（1.33／1.43／1.6／1.77／2.16，容許 0.01），所以沒有影片可播。`BootstrapVideo.CheckAspectRatio` 裡 6 個比較改成挑最接近的比例（`mk_nearest_aspect`）。使用者確認視窗化會出現。
+- **標題點擊沒反應**：照順序量出來的，每一步都用追蹤確認：
+  - 點擊有到 `Button.Press` → `UnityEvent.Invoke`，但沒有任何監聽被呼叫。
+  - `level0` 裡這顆按鈕的 onClick 有一個持久呼叫 `BootstrapTitleScreen.LoadSceneViaButton`（Void、RuntimeOnly），跟能用的 `Bootstrap.ClickSkip` 一樣。
+  - 建立監聽時 `PersistentCallGroup.Initialize` 丟 `IndexOutOfRangeException`：`List<PersistentCall>` 的 `_size` 是 1，但 `_items` 是空的，表示陣列已經被回收、記憶體被重用。
+  - 建一個 `mk_nogc` 測試開關（遊戲資料夾裡有這個檔案就關掉 GC），關掉 GC 後點擊正常 → 確定是 GC 誤收。
+- **原因**：每條執行緒的 guest 堆疊原本是另外 `VirtualAlloc` 的一塊，Boehm 對這條執行緒只掃這一塊（`pthread_get_stackaddr_np` 回報它的頂端，`thread_get_state` 回報 guest 的 sp 與暫存器）。所以三種東西 GC 看不到：
+  1. host 堆疊上 Unity 原生程式拿著的受控指標（例如載入場景時反序列化剛建立的物件）。
+  2. 外層 guest 進入點的 `cpu` 結構（它們在 host 堆疊上）。
+  3. 被暫停的執行緒在 host 暫存器裡的值。
+  iOS 上這些全在同一條堆疊，所以原版沒事。標題 → 選單偶爾在 GC 時閃退（讀到 class 是 0 或垃圾的物件），以及每次啟動 Unity log 裡的 11 個 `IndexOutOfRangeException`，應該也是同一個原因。
+- **修法**（`win_rt.c`、`darwin_win_sys.c`）：
+  - host 堆疊夠大（≥ 8 MB）的執行緒，每次 `mk_guest_enter` 都從 host 堆疊 `_alloca` 一段當 guest 堆疊（最外層 2 MB、巢狀 1 MB），並用 `RtlCaptureContext` 把進入時的 host 暫存器存在自己的框架裡。
+  - `pthread_get_stackaddr_np`／`stacksize` 回報 host 堆疊。
+  - `thread_suspend` 記下被暫停執行緒的 host rsp 與 16 個整數暫存器，`thread_get_state` 回報這些。
+  - 這樣 GC 掃的一段範圍 `[sp, host 堆疊底)` 就涵蓋 guest 框架、`cpu` 結構和 host 框架。
+  - 主執行緒用啟動器的 `/STACK:268435456` 預留 256 MB，我們開的 pthread 預留 64 MB（都是用到才提交）。
+  - host 堆疊太小的執行緒（Unity 自己開的）沿用舊做法，log 會寫「guest stack kept apart」。
+- **結果（GC 開著）**：標題點擊 → `LoadSceneViaButton` → `LoadScene`，選到觸控控制器（`CustomTiltController 0`，`IsTiltControllerUsed` 成立），進到主選單與 `World0_Level1`，沒有閃退；Unity log 的 `IndexOutOfRangeException`／`NullReferenceException` 從 11 個變 0 個；沒有執行緒走舊做法。
