@@ -21,7 +21,7 @@
 
 ## 3. UnityFramework 的分析結果
 
-細節與數字在 [`notes/2026-11-03-unityframework-analysis.md`](../notes/2026-11-03-unityframework-analysis.md)。重點：
+細節與數字在 [`notes/2026-11-03-unityframework-analysis.md`](notes/2026-11-03-unityframework-analysis.md)。重點：
 
 - `__TEXT,__text` 17 MB（引擎＋libil2cpp＋FMOD＋外掛），`__TEXT,il2cpp` 23 MB（**IL2CPP 產生的遊戲程式碼獨立一個 section**，112,885 個函式），全部 224,657 個函式。
 - 匯入 896 個符號，來自 24 個系統框架。用呼叫圖算過：**libil2cpp 與遊戲程式碼實際碰得到的只有** libSystem 約 215 個、libc++ 49 個、CoreFoundation 9 個、ObjC runtime 10 個；UIKit、Metal、AVFoundation 等都只有引擎在用。

@@ -4,3 +4,7 @@ generated/
 work/
 out/
 __pycache__/
+
+# Local working rules for AI sessions (not published)
+AGENTS.md
+CLAUDE.md

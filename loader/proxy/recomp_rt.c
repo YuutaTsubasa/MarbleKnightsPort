@@ -1,5 +1,5 @@
 // Runtime for recompiled game code on Android (validation harness for the PC build, see
-// notes/2026-11-03-pc-recomp-feasibility.md): a batch of functions translated by tools/a64toc.py
+// docs/notes/2026-11-03-pc-recomp-feasibility.md): a batch of functions translated by tools/a64toc.py
 // is compiled for arm64 and replaces the originals in UnityFramework. If the game keeps working,
 // the translation of that batch is right. The batch (work/recomp/batch.c) is generated from the
 // game and never goes into Git; without it this file only provides an empty table.

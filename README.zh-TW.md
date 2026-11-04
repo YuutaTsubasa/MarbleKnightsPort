@@ -1,0 +1,82 @@
+# Marble Knights Recompiled
+
+[English](README.md)
+
+把 WayForward 的 Apple Arcade 遊戲 *Marble Knights*（已下架）從 iOS 移植到 Windows 的非官方專案，做法是靜態重編譯：iOS 版 `UnityFramework` 裡的 ARM64 程式（IL2CPP 執行環境＋遊戲編譯好的 C#，超過 10 萬個函式）事先轉成 C，編成 `GameAssembly.dll`，交給官方 Unity 2019.4.17f1 Windows 播放器載入。iOS 的系統呼叫、Game Center、CloudKit 存檔、手把與震動由一層小的相容層代替。
+
+**本專案不含任何遊戲資料。** 遊戲要自己準備（iOS 版 *Marble Knights* 2.3.1，build 760642）。Unity 的播放器也不包含，請從 Unity 官方下載。建置或分享任何東西之前，請先讀 [LEGAL.md](LEGAL.md)。
+
+> [!IMPORTANT]
+> 還在開發中，沒有發布版本。Windows 上已經能開機、進關卡玩，但還有幾個地方是壞的（見[現況](#現況)）。
+
+## 現況
+
+Windows 上能用的：
+
+- 開頭標誌、標題、存檔、主選單、Quest Mode 關卡；有聲音（遊戲自己的 FMOD 混音，經 waveOut 播放）。
+- 手把（XInput）與鍵盤。
+- 畫面：iOS 的 Metal 著色器轉成 GLSL，播放器用 OpenGL ES 3 跑；桌機 GPU 不支援的 PVRTC 貼圖在建置時解開。
+
+已知問題：
+
+- 滑鼠還不能當觸控用（標題畫面、關卡裡的畫面搖桿）。
+- 標題 → 選單之間偶爾在 GC 時閃退。
+- 只有全螢幕才出現的破圖；地板光暈的 z-fighting。
+
+| 平台 | 狀態 |
+|---|---|
+| Windows（x64） | 能建置、能玩，有上面的問題 |
+| Android（ARM64） | 早期的路線：用 Mach-O 載入器直接載入 iOS 的 `UnityFramework`，配 Unity 官方 Android 播放器；跑到第一個場景 |
+| Linux、macOS | 還沒開始 |
+
+## 做法
+
+- `tools/prelink_win.py` 把 `UnityFramework` 的 Mach-O 映像排進記憶體、解出匯入，記下每個匯入要接到哪裡。
+- `tools/a64toc.py` 把每個函式轉成操作暫存器檔（`x0`–`x30`、`sp`、旗標、`v0`–`v31`）的 C。guest 指標就是 host 指標；直接呼叫變成 C 呼叫，間接呼叫查表分派，switch 表變成 `switch`。例外依映像的 LSDA 逐個呼叫點處理。只剩極少數指令（多半是 `udf` 陷阱）沒轉。
+- `loader/win/` 是 host 端執行環境：Unity 播放器呼叫的 229 個 `il2cpp_*`、Windows x64 與轉換後程式之間的呼叫慣例轉接、照 Windows 重寫的 Darwin libSystem、CoreFoundation、libc++。
+- `tools/build_win.py` 用官方 Windows IL2CPP 播放器和 iOS 版的資料組出播放器資料夾（序列化檔的平台改成 StandaloneWindows64，`global-metadata.dat` 原樣沿用）。
+
+設計、要注意的 Darwin ABI 差異、每一步的數字在 [docs/design.md](docs/design.md) 與 [docs/notes/](docs/notes/)。
+
+## 建置
+
+目前只有 Windows。需要：
+
+- Visual Studio 2022 Build Tools（MSVC 標頭與函式庫）、LLVM（`clang-cl`、`lld-link`、`llvm-rc`）、Python 3 與 [capstone](https://www.capstone-engine.org/)。
+- Unity 2019.4.17f1：Editor（用它的 libil2cpp 標頭）與 Windows Build Support（IL2CPP），從 Unity 官方下載，解到 `work/unity/editor` 與 `work/unity/winil2cpp`。
+- 自己的 iOS 版遊戲，解到 `work/ipa/`。
+
+```bash
+python -I tools/build_win.py              # 播放器資料夾：work/win/MarbleKnights/
+python -I tools/win_textures.py           # PVRTC → RGBA32
+python -I tools/prelink_win.py            # Mach-O 映像 → work/win/image
+python -E -X utf8 tools/a64toc.py --all   # ARM64 → C（work/win/gen）
+bash tools/build_win_ga.sh                # GameAssembly.dll（約 5 分鐘；--runtime-only 只重編執行環境）
+```
+
+之後執行 `work/win/MarbleKnights/MarbleKnights.exe`。建置產生的東西都是從遊戲來的，全部留在 `work/`（Git 會忽略）。
+
+### Android 路線
+
+```bash
+NDK="$LOCALAPPDATA/Android/Sdk/ndk/29.0.13599879"
+cmake -S loader -B work/build-android -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build work/build-android
+python -I tools/build_apk.py      # 需要 work/unity/AndroidPlayer 與 work/raw-android；APK 在 out/，只裝自己的裝置
+```
+
+`tools/thor-*.sh` 是作者在自己的測試裝置上用的腳本。
+
+## 目錄
+
+| 路徑 | 內容 |
+|---|---|
+| `tools/` | 轉換器（`a64toc.py`）、Mach-O 與 Unity 資產讀取、建置腳本、分析腳本 |
+| `loader/win/` | 轉換後程式的 Windows 執行環境、Darwin 相容層、外掛（FMOD 輸出、手把、存檔）與啟動器 |
+| `loader/src/`、`loader/proxy/` | Android 路線：Mach-O 載入器、Darwin → bionic 相容層、`libil2cpp.so` 代理 |
+| `docs/` | 設計文件與開發紀錄 |
+| `__ROM__/`、`work/`、`private/`、`generated/`、`out/` | 遊戲檔與從它產生的一切（Git 忽略） |
+
+## 授權
+
+本 repo 的程式碼以 [MIT License](LICENSE) 授權。*Marble Knights* © WayForward Technologies, Inc.；本專案與 WayForward、Apple、Unity Technologies 無關，也未經它們認可。建置用到的東西見 [THIRD_PARTY.md](THIRD_PARTY.md)。

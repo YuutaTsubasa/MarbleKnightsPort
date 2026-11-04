@@ -590,7 +590,7 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x1e51338, "RewiredPointerInputModule.GetTouchPointerEventData" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
 };
 void mk_trace(uint64_t off, cpu *c) {
-    // UI raycasts (findings in notes/2026-11-03-pc-recomp-feasibility.md): no longer logged. Naming
+    // UI raycasts (findings in docs/notes/2026-11-03-pc-recomp-feasibility.md): no longer logged. Naming
     // objects means calling into the engine from inside translated code, which is not safe here.
     if (off == 0x24559bc || off == 0x246b7f0 || off == 0x246d56c || off == 0x246c634 || off == 0x18f8eec) return;
     // string comparisons (A64TOC_TRACE_CALLS): IsTiltControllerUsed's controller name == the tilt

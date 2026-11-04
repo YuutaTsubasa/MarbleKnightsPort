@@ -1,0 +1,13 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Marble Knights",
+  "system": "iOS",
+  "type": "recomp",
+  "original": { "region": "Worldwide", "version": "2.3.1 (760642)" },
+  "project": "Marble Knights Recompiled",
+  "status": "in-progress",
+  "targets": ["Windows"],
+  "toolchain": "a64toc (own ARM64 to C translator)",
+  "maintainers": [{ "name": "YuutaTsubasa", "link": "https://github.com/YuutaTsubasa" }],
+  "links": [{ "url": "https://github.com/YuutaTsubasa/MarbleKnightsRecompiled", "label": "Repository" }]
+}
