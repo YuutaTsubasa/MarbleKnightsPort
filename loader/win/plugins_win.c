@@ -624,6 +624,37 @@ void mk_trace(uint64_t off, cpu *c) {
         mk_log("trace UnityEvent listener %s.%s (target %s) frame %d", mclass, mname, tclass, g_frame_count ? g_frame_count() : -1);
         return;
     }
+    // Persistent UnityEvent calls (the title button's LoadSceneViaButton is in the scene but never
+    // becomes a listener): PersistentCall +0x10 m_Target, +0x18 m_MethodName; UnityEngine.Object
+    // +0x10 m_CachedPtr; a reflection MethodInfo object +0x10 points at the il2cpp MethodInfo.
+    if (off == 0x23f1e8c || off == 0x23f1f14 || off == 0x23f2b40 || off == 0x23f1814 || off == 0x23f18ec || off == 0x23f19f8) {
+        static unsigned n;
+        if (n++ >= 200) return;
+        char nm[96] = "?";
+        const char *cls = "-", *what = "?";
+        uint8_t *obj = NULL;
+        if (off == 0x23f1e8c || off == 0x23f1f14) {
+            uint8_t *pc = (uint8_t *)(uintptr_t)X(0);
+            what = off == 0x23f1e8c ? "PersistentCall.IsValid" : "PersistentCall.GetRuntimeCall";
+            if (pc) { managed_ascii(*(void **)(pc + 0x18), nm, sizeof(nm)); obj = *(uint8_t **)(pc + 0x10); }
+        } else if (off == 0x23f2b40) {
+            what = "UnityEventBase.GetValidMethodInfo";
+            managed_ascii((void *)(uintptr_t)X(1), nm, sizeof(nm));
+            obj = (uint8_t *)(uintptr_t)X(0);
+        } else if (off == 0x23f19f8) {
+            what = "InvokableCallList.AddPersistentInvokableCall";
+        } else {
+            what = "InvokableCall..ctor";
+            uint8_t *rm = (uint8_t *)(uintptr_t)X(2);
+            uint8_t *mi = rm ? *(uint8_t **)(rm + 0x10) : NULL;
+            if (mi && *(const char **)(mi + 0x10)) snprintf(nm, sizeof(nm), "%s", *(const char **)(mi + 0x10));
+            obj = (uint8_t *)(uintptr_t)X(1);
+        }
+        if (obj && *(uintptr_t *)obj) cls = *(const char **)((*(uintptr_t *)obj & ~(uintptr_t)1) + 0x10);
+        mk_log("trace %s '%s' target %s (%p, native %p) frame %d", what, nm, cls, (void *)obj,
+               obj ? *(void **)(obj + 0x10) : NULL, g_frame_count ? g_frame_count() : -1);
+        return;
+    }
     if ((off == 0x1e56718 || off == 0x245be48) && ((X(2) & 0xff) || (X(3) & 0xff))) {  // ProcessTouchPress(data, pressed, released)
         mk_log("trace %s pressed=%d released=%d frame %d", off == 0x1e56718 ? "RewiredStandaloneInputModule.ProcessTouchPress" : "StandaloneInputModule.ProcessTouchPress",
                (int)(X(2) & 0xff), (int)(X(3) & 0xff), g_frame_count ? g_frame_count() : -1);
