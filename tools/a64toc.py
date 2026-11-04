@@ -26,6 +26,9 @@ import sys
 # A64TOC_TRACE=<hex offset>,...: translated functions that call mk_trace(off, c) on entry
 # (debugging; only the chunks holding them change)
 TRACE = {int(a, 16) for a in os.environ.get("A64TOC_TRACE", "").replace(" ", "").split(",") if a}
+# A64TOC_TRACE_CALLS=<hex address>,...: `bl` instructions that call mk_trace(address, c) just before
+# the call, so the runtime can log the arguments (debugging, like A64TOC_TRACE)
+TRACE_CALLS = {int(a, 16) for a in os.environ.get("A64TOC_TRACE_CALLS", "").replace(" ", "").split(",") if a}
 
 # The touch controls set themselves up only when Application.platform is IPhonePlayer (the Windows
 # player answers WindowsPlayer). The whole game cannot be told iOS: the save system picks another
@@ -1046,6 +1049,8 @@ class Fn:
             return
         if mn in ("b", "bl") and ops[0].type == A.ARM64_OP_IMM and cc in (0, A.ARM64_CC_AL, A.ARM64_CC_INVALID):
             t = ops[0].imm
+            if mn == "bl" and i.address in TRACE_CALLS:
+                self.emit(f"{{ void mk_trace(uint64_t off, cpu *c); mk_trace({i.address:#x}, c); }}")
             self.emit(self.eh_wrap(i, self.call(t)) if mn == "bl" else self.target(i, t))
             return
         if mn.startswith("b.") or (mn == "b" and cc):

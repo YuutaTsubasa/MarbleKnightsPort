@@ -555,6 +555,11 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x1d63e68, "BootstrapAppleArcade.CloseEnough" }, { 0x24559bc, "ExecuteEvents.Execute" }, { 0x246b7f0, "Graphic.Raycast" },
     { 0x246d56c, "GraphicRaycaster.Raycast(canvas)" }, { 0x18f7c2c, "DynamicJoystick.Start" }, { 0x18f8c78, "FloatingJoystick.Start" },
     { 0x18f9430, "VariableJoystick.Start" },
+    { 0x19a5a54, "UI_ControllerWidget.ForceTiltController" }, { 0x19a9b18, "UI_ControllerWidget.FindTiltController" },
+    { 0x19a5d28, "UI_ControllerWidget.AssignPlayerController" }, { 0x19a854c, "UI_ControllerWidget.SetSinglePlayerController" },
+    { 0x19a4154, "UI_ControllerWidget.ClearUsedControllers" }, { 0x19a7374, "UI_ControllerWidget.ReassignUsedControllerNames" },
+    { 0x19a7950, "UI_ControllerWidget.AssignOnlyUsedControllersToSystemPlayer" }, { 0x19a9048, "UI_ControllerWidget.Initialize" },
+    { 0x19a97a8, "UI_ControllerWidget.FullReinitialize" }, { 0x1cb8e3c, "MenuManager.SetSinglePlayerController" },
     { 0x1e51338, "RewiredPointerInputModule.GetTouchPointerEventData" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
 };
 // name of a UnityEngine.Object (a component's name is its GameObject's), for the traces below
@@ -583,6 +588,18 @@ void mk_trace(uint64_t off, cpu *c) {
             mk_log("trace %s '%s' frame %d", off == 0x24559bc ? "ExecuteEvents.Execute on" : off == 0x246b7f0 ? "Graphic.Raycast" : "GraphicRaycaster on",
                    object_name(X(0), nm, sizeof(nm)), frame);
         if (off != 0x246c634) return;
+    }
+    // string comparisons (A64TOC_TRACE_CALLS): IsTiltControllerUsed's controller name == the tilt
+    // controller's name, and the name matches in ForceTiltController / FindTiltController
+    if (off == 0x19a4a38 || off == 0x19a5c20 || off == 0x19a9c48) {
+        static unsigned n;
+        if (n++ >= 300) return;
+        char a[96], b[96];
+        managed_ascii((void *)(uintptr_t)X(0), a, sizeof(a));
+        managed_ascii((void *)(uintptr_t)X(1), b, sizeof(b));
+        mk_log("trace %s compares '%s' with '%s' frame %d", off == 0x19a4a38 ? "IsTiltControllerUsed" : off == 0x19a5c20 ? "ForceTiltController" : "FindTiltController",
+               a, b, g_frame_count ? g_frame_count() : -1);
+        return;
     }
     if (off == 0x18f8eec) {  // UIJoystick.get_Direction: which joystick, and is it active
         static unsigned n;
