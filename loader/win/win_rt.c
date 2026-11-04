@@ -599,6 +599,43 @@ void mk_runtime_start(void) {
     run_initializers();
 }
 
+// Hardware exceptions (first chance): log the code and where, before a crash handler or a silent
+// process exit (a stack overflow leaves no crash report) loses it. Translated functions are named
+// from GameAssembly.pdb; on a stack overflow only the address is logged (little stack is left).
+static LONG CALLBACK log_exception(EXCEPTION_POINTERS *ep) {
+    static volatile LONG logged;
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_ILLEGAL_INSTRUCTION &&
+        code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != EXCEPTION_PRIV_INSTRUCTION)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedIncrement(&logged) > 8) return EXCEPTION_CONTINUE_SEARCH;
+    uint64_t pc = ep->ContextRecord->Rip;
+    HMODULE mod = NULL;
+    char modname[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)(uintptr_t)pc, &mod))
+        GetModuleFileNameA(mod, modname, sizeof(modname));
+    const char *base = strrchr(modname, '\\');
+    base = base ? base + 1 : modname;
+    if (code == EXCEPTION_STACK_OVERFLOW) {
+        mk_log("exception %#lx (stack overflow) at %s+%#llx rsp=%#llx", code, base, (unsigned long long)(pc - (uint64_t)(uintptr_t)mod),
+               (unsigned long long)ep->ContextRecord->Rsp);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    static int sym_ready;
+    HANDLE proc = GetCurrentProcess();
+    if (!sym_ready) { SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS); SymInitialize(proc, NULL, TRUE); sym_ready = 1; }
+    char buf[sizeof(SYMBOL_INFO) + 256];
+    SYMBOL_INFO *si = (SYMBOL_INFO *)buf;
+    si->SizeOfStruct = sizeof(SYMBOL_INFO);
+    si->MaxNameLen = 255;
+    DWORD64 disp = 0;
+    int named = SymFromAddr(proc, pc, &disp, si);
+    mk_log("exception %#lx at %s+%#llx (%s+%#llx), address %#llx", code, base, (unsigned long long)(pc - (uint64_t)(uintptr_t)mod),
+           named ? si->Name : "?", (unsigned long long)disp,
+           (unsigned long long)(ep->ExceptionRecord->NumberParameters > 1 ? ep->ExceptionRecord->ExceptionInformation[1] : 0));
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
@@ -611,6 +648,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
         g_log = fopen(path, "w");
         g_tls_self = TlsAlloc();
         mk_log("GameAssembly.dll (recompiled UnityFramework, %d functions)", mk_rc_nfns);
+        AddVectoredExceptionHandler(1, log_exception);
     }
     return TRUE;
 }

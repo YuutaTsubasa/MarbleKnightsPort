@@ -566,33 +566,10 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x1d29f30, "ControllerSelection.CheckAutoAssignFromTitleScreen" }, { 0x1d28fd0, "ControllerSelection.InitializeAssignedControllers" },
     { 0x1e51338, "RewiredPointerInputModule.GetTouchPointerEventData" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
 };
-// name of a UnityEngine.Object (a component's name is its GameObject's), for the traces below
-static const char *object_name(uint64_t obj, char *out, int n) {
-    static void *(*get_name)(void *);
-    if (!get_name) get_name = (void *(*)(void *))mk_find_icall("UnityEngine.Object::GetName");
-    out[0] = 0;
-    if (obj && get_name) managed_ascii(get_name((void *)(uintptr_t)obj), out, n);
-    return out;
-}
 void mk_trace(uint64_t off, cpu *c) {
-    // On the frame a press begins: every event target (ExecuteEvents.Execute), every raycaster that
-    // runs (GraphicRaycaster.Raycast: `this`, named after its canvas object), the camera and point it
-    // tests (the static Raycast; its canvas argument is unused and x0 holds no object there) and
-    // every graphic tested (Graphic.Raycast), by name.
-    if (off == 0x24559bc || off == 0x246b7f0 || off == 0x246d56c || off == 0x246c634) {
-        static unsigned logged;
-        if (!g_mtouch_active || g_mtouch.phase != 0 || logged >= 4000) return;
-        logged++;
-        char nm[96];
-        int frame = g_frame_count ? g_frame_count() : -1;
-        if (off == 0x246d56c)
-            mk_log("trace GraphicRaycaster.Raycast camera '%s' at (%.0f, %.0f) frame %d", object_name(X(1), nm, sizeof(nm)),
-                   c->v[0].f[0], c->v[1].f[0], frame);
-        else
-            mk_log("trace %s '%s' frame %d", off == 0x24559bc ? "ExecuteEvents.Execute on" : off == 0x246b7f0 ? "Graphic.Raycast" : "GraphicRaycaster on",
-                   object_name(X(0), nm, sizeof(nm)), frame);
-        if (off != 0x246c634) return;
-    }
+    // UI raycasts (findings in notes/2026-11-03-pc-recomp-feasibility.md): no longer logged. Naming
+    // objects means calling into the engine from inside translated code, which is not safe here.
+    if (off == 0x24559bc || off == 0x246b7f0 || off == 0x246d56c || off == 0x246c634 || off == 0x18f8eec) return;
     // string comparisons (A64TOC_TRACE_CALLS): IsTiltControllerUsed's controller name == the tilt
     // controller's name, and the name matches in ForceTiltController / FindTiltController
     if (off == 0x19a4a38 || off == 0x19a5c20 || off == 0x19a9c48 || off == 0x1d299a8 || off == 0x1d29bac) {
@@ -604,16 +581,6 @@ void mk_trace(uint64_t off, cpu *c) {
         mk_log("trace %s compares '%s' with '%s' frame %d", off == 0x19a4a38 ? "IsTiltControllerUsed" : off == 0x19a5c20 ? "ForceTiltController" : off == 0x19a9c48 ? "FindTiltController" :
                off == 0x1d299a8 ? "AssignControllerFromTitleScreen (!=)" : "AssignControllerFromTitleScreen (==)",
                a, b, g_frame_count ? g_frame_count() : -1);
-        return;
-    }
-    if (off == 0x18f8eec) {  // UIJoystick.get_Direction: which joystick, and is it active
-        static unsigned n;
-        static uint8_t (*enabled)(void *);
-        if (n++ % 600) return;
-        if (!enabled) enabled = (uint8_t (*)(void *))mk_find_icall("UnityEngine.Behaviour::get_isActiveAndEnabled");
-        char nm[96];
-        mk_log("trace UIJoystick '%s' isActiveAndEnabled=%d frame %d", object_name(X(0), nm, sizeof(nm)),
-               enabled && X(0) ? enabled((void *)(uintptr_t)X(0)) : -1, g_frame_count ? g_frame_count() : -1);
         return;
     }
     if ((off == 0x1e56718 || off == 0x245be48) && ((X(2) & 0xff) || (X(3) & 0xff))) {  // ProcessTouchPress(data, pressed, released)
