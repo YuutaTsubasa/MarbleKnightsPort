@@ -655,6 +655,31 @@ void mk_trace(uint64_t off, cpu *c) {
                obj ? *(void **)(obj + 0x10) : NULL, g_frame_count ? g_frame_count() : -1);
         return;
     }
+    // UnityEventBase.RebuildPersistentCallsIfNeeded(this) / PersistentCallGroup.Initialize(group, list, event):
+    // UnityEventBase +0x10 m_Calls, +0x18 m_PersistentCalls, +0x28 m_CallsDirty; PersistentCallGroup
+    // +0x10 m_Calls (List<PersistentCall>: +0x10 _items, +0x18 _size; array elements from +0x20).
+    if (off == 0x23f31ec || off == 0x23f2768) {
+        static unsigned n;
+        if (n++ >= 100) return;
+        uint8_t *ev = (uint8_t *)(uintptr_t)(off == 0x23f31ec ? X(0) : X(2));
+        uint8_t *grp = off == 0x23f31ec ? (ev ? *(uint8_t **)(ev + 0x18) : NULL) : (uint8_t *)(uintptr_t)X(0);
+        uint8_t *lst = grp ? *(uint8_t **)(grp + 0x10) : NULL;
+        uint8_t *items = lst ? *(uint8_t **)(lst + 0x10) : NULL;
+        int size = lst ? *(int *)(lst + 0x18) : -1;
+        char first[64] = "-";
+        uint8_t *pc0 = items && size > 0 ? *(uint8_t **)(items + 0x20) : NULL;
+        if (pc0) managed_ascii(*(void **)(pc0 + 0x18), first, sizeof(first));
+        mk_log("trace %s event %p dirty %d calls %p group %p list %p size %d first %p '%s' frame %d",
+               off == 0x23f31ec ? "UnityEventBase.RebuildPersistentCallsIfNeeded" : "PersistentCallGroup.Initialize",
+               (void *)ev, ev ? ev[0x28] : -1, ev ? *(void **)(ev + 0x10) : NULL, (void *)grp, (void *)lst, size,
+               (void *)pc0, first, g_frame_count ? g_frame_count() : -1);
+        return;
+    }
+    if (off == 0xe22620) {  // il2cpp's raise-NullReferenceException helper
+        static unsigned n;
+        if (n++ < 50) mk_log("trace NullReferenceException raised frame %d", g_frame_count ? g_frame_count() : -1);
+        return;
+    }
     if ((off == 0x1e56718 || off == 0x245be48) && ((X(2) & 0xff) || (X(3) & 0xff))) {  // ProcessTouchPress(data, pressed, released)
         mk_log("trace %s pressed=%d released=%d frame %d", off == 0x1e56718 ? "RewiredStandaloneInputModule.ProcessTouchPress" : "StandaloneInputModule.ProcessTouchPress",
                (int)(X(2) & 0xff), (int)(X(3) & 0xff), g_frame_count ? g_frame_count() : -1);
