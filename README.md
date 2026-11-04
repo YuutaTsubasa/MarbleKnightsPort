@@ -14,7 +14,7 @@
 - 引擎用同版本的官方 Windows IL2CPP 播放器 `UnityPlayer.dll`，`global-metadata.dat` 原樣沿用；Darwin 系統呼叫換成 Windows 的實作（`loader/win/`）。
 - 著色器沿用 Metal → GLSL 的轉換，以 `-force-gles30` 執行；PVRTC 貼圖在建置時解成 RGBA32。
 
-> **只做個人保存、自己玩，不公開發布**。IPA 和從裡面解出、產生的任何東西都不進 Git、不上雲端或 CI（見 [AGENTS.md](AGENTS.md)）。
+> 這個 repo 只有我們自己寫的載入器、轉換器、工具與文件，**不含任何遊戲檔案**，也不提供遊戲或 Unity 播放器的下載。遊戲本體要自己準備；IPA 和從裡面解出、產生的任何東西都不進 Git、不上雲端或 CI（見 [AGENTS.md](AGENTS.md)）。Marble Knights 是 WayForward 的作品，本專案與 WayForward、Apple、Unity 無關。
 
 ## 現況（2026-11-04）
 
