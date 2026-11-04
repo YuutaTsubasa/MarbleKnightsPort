@@ -529,6 +529,14 @@ void *mk_input_icall(const char *name, void *fn) {
     return fn;
 }
 
+// BootstrapTitleScreen.LoadSceneViaButton's `controller.name.Contains(...)` (tools/a64toc.py CALL_SUBST):
+// a click on the start button is a touch, so the touch controller is the one recorded.
+void mk_title_button_controller(cpu *c) {
+    char name[64];
+    managed_ascii((void *)(uintptr_t)X(0), name, sizeof(name));
+    X(0) = strcmp(name, "Tilt Controller") == 0;
+}
+
 // ---- debugging: entries of functions translated with A64TOC_TRACE (tools/a64toc.py) ----
 // Logs the first calls of each, then every power of two; x0 is `this`, x1 the first argument,
 // s0-s2 the first float arguments.

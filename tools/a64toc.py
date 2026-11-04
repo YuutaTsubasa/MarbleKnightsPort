@@ -36,6 +36,11 @@ TRACE_CALLS = {int(a, 16) for a in os.environ.get("A64TOC_TRACE_CALLS", "").repl
 # iOSAttackButton.OnEnable, CustomTiltControl.Start, iOSDismountButton.Start, iOSRemoteMenuNavigation.Start,
 # iOSRemoteMenuButton.Start, iOSRemoteBackButton.Start.
 APPLICATION_GET_PLATFORM = 0x23e7b08
+# BootstrapTitleScreen.LoadSceneViaButton (the on-screen start button) records the controller whose
+# name contains a string that matches the keyboard (Mac: a click is the keyboard-and-mouse player; iOS
+# has no keyboard). Our clicks are touches, so the String.Contains there picks the touch controller
+# ("Tilt Controller") instead; a key or pad press at the title takes another path.
+CALL_SUBST = {0x1d6614c: "{ void mk_title_button_controller(cpu *c); mk_title_button_controller(c); }"}
 IOS_PLATFORM_CALLERS = {0x1902fbc, 0x1900568, 0x1904d84, 0x1905644, 0x1905368, 0x1905070}
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1049,6 +1054,9 @@ class Fn:
             return
         if mn in ("b", "bl") and ops[0].type == A.ARM64_OP_IMM and cc in (0, A.ARM64_CC_AL, A.ARM64_CC_INVALID):
             t = ops[0].imm
+            if mn == "bl" and i.address in CALL_SUBST:
+                self.emit(CALL_SUBST[i.address])
+                return
             if mn == "bl" and i.address in TRACE_CALLS:
                 self.emit(f"{{ void mk_trace(uint64_t off, cpu *c); mk_trace({i.address:#x}, c); }}")
             self.emit(self.eh_wrap(i, self.call(t)) if mn == "bl" else self.target(i, t))
