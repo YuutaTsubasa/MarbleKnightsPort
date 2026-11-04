@@ -290,14 +290,28 @@ static void fullscreen_hotkey(void) {
 }
 
 // The cursor disappears in full screen although the game's own requests are overridden (the
-// player's mode switch hides it without them): show and free it again every 30 pumps.
+// player's mode switch hides it without them): while our window is in front, show and free it
+// again, down to Windows' own cursor state (show count, arrow). State changes are logged.
 static void (*g_cursor_visible)(uint8_t);  // Cursor.set_visible / set_lockState (mk_input_icall)
 static void (*g_cursor_lock)(int32_t);
 static void keep_cursor(void) {
     static unsigned n;
-    if (n++ % 30) return;
+    static DWORD last_flags = ~0u;
+    if (n++ % 10) return;
+    if (!own_window_focused()) return;
     if (g_cursor_visible) g_cursor_visible(1);
     if (g_cursor_lock) g_cursor_lock(0);
+    CURSORINFO ci = { sizeof(ci) };
+    if (!GetCursorInfo(&ci)) return;
+    if (ci.flags != last_flags) {
+        mk_log("cursor: flags %lu handle %p", (unsigned long)ci.flags, (void *)ci.hCursor);
+        last_flags = ci.flags;
+    }
+    if (!(ci.flags & CURSOR_SHOWING)) {
+        for (int k = 0; k < 64 && ShowCursor(TRUE) < 0; k++) {}
+        if (!ci.hCursor) SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_ARROW));
+        ClipCursor(NULL);
+    }
 }
 
 // main thread, from the engine's managed calls (il2cpp_runtime_invoke)
