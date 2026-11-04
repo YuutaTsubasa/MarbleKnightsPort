@@ -560,6 +560,10 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x19a4154, "UI_ControllerWidget.ClearUsedControllers" }, { 0x19a7374, "UI_ControllerWidget.ReassignUsedControllerNames" },
     { 0x19a7950, "UI_ControllerWidget.AssignOnlyUsedControllersToSystemPlayer" }, { 0x19a9048, "UI_ControllerWidget.Initialize" },
     { 0x19a97a8, "UI_ControllerWidget.FullReinitialize" }, { 0x1cb8e3c, "MenuManager.SetSinglePlayerController" },
+    { 0x1d29910, "ControllerSelection.AssignControllerFromTitleScreen" }, { 0x1d232ec, "ControllerSelection.AssignFirstTiltController" },
+    { 0x1d29528, "ControllerSelection.AutoAssignControllers" }, { 0x1d275f4, "ControllerSelection.CheckNewPlayerInput" },
+    { 0x1d39114, "ControllerSelection_ControllerOption.AssignFirstTiltController" },
+    { 0x1d29f30, "ControllerSelection.CheckAutoAssignFromTitleScreen" }, { 0x1d28fd0, "ControllerSelection.InitializeAssignedControllers" },
     { 0x1e51338, "RewiredPointerInputModule.GetTouchPointerEventData" }, { 0x23eb29c, "Camera.get_aspect" }, { 0x1d63eec, "BootstrapAppleArcade.CoDelayComplete" },
 };
 // name of a UnityEngine.Object (a component's name is its GameObject's), for the traces below
@@ -591,13 +595,14 @@ void mk_trace(uint64_t off, cpu *c) {
     }
     // string comparisons (A64TOC_TRACE_CALLS): IsTiltControllerUsed's controller name == the tilt
     // controller's name, and the name matches in ForceTiltController / FindTiltController
-    if (off == 0x19a4a38 || off == 0x19a5c20 || off == 0x19a9c48) {
+    if (off == 0x19a4a38 || off == 0x19a5c20 || off == 0x19a9c48 || off == 0x1d299a8 || off == 0x1d29bac) {
         static unsigned n;
         if (n++ >= 300) return;
         char a[96], b[96];
         managed_ascii((void *)(uintptr_t)X(0), a, sizeof(a));
         managed_ascii((void *)(uintptr_t)X(1), b, sizeof(b));
-        mk_log("trace %s compares '%s' with '%s' frame %d", off == 0x19a4a38 ? "IsTiltControllerUsed" : off == 0x19a5c20 ? "ForceTiltController" : "FindTiltController",
+        mk_log("trace %s compares '%s' with '%s' frame %d", off == 0x19a4a38 ? "IsTiltControllerUsed" : off == 0x19a5c20 ? "ForceTiltController" : off == 0x19a9c48 ? "FindTiltController" :
+               off == 0x1d299a8 ? "AssignControllerFromTitleScreen (!=)" : "AssignControllerFromTitleScreen (==)",
                a, b, g_frame_count ? g_frame_count() : -1);
         return;
     }
