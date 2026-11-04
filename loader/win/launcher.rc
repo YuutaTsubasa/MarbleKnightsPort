@@ -1,0 +1,3 @@
+// MarbleKnights.exe's icon: group 103 is the one Unity's player uses for its window. icon.ico is made
+// from the game's own app icon by tools/win_icon.py (work/win/, not in Git).
+103 ICON "icon.ico"
