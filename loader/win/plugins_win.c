@@ -566,21 +566,23 @@ static const char *object_name(uint64_t obj, char *out, int n) {
     return out;
 }
 void mk_trace(uint64_t off, cpu *c) {
-    // On the frame a press begins: every event target (ExecuteEvents.Execute), every canvas the
-    // raycasters test (GraphicRaycaster.Raycast(canvas, camera, ...)) and every graphic tested in it
-    // (Graphic.Raycast), by name.
-    if (off == 0x24559bc || off == 0x246b7f0 || off == 0x246d56c) {
+    // On the frame a press begins: every event target (ExecuteEvents.Execute), every raycaster that
+    // runs (GraphicRaycaster.Raycast: `this`, named after its canvas object), the camera and point it
+    // tests (the static Raycast; its canvas argument is unused and x0 holds no object there) and
+    // every graphic tested (Graphic.Raycast), by name.
+    if (off == 0x24559bc || off == 0x246b7f0 || off == 0x246d56c || off == 0x246c634) {
         static unsigned logged;
         if (!g_mtouch_active || g_mtouch.phase != 0 || logged >= 4000) return;
         logged++;
-        char nm[96], cam[96];
+        char nm[96];
+        int frame = g_frame_count ? g_frame_count() : -1;
         if (off == 0x246d56c)
-            mk_log("trace GraphicRaycaster.Raycast canvas '%s' camera '%s' at (%.0f, %.0f) frame %d", object_name(X(0), nm, sizeof(nm)),
-                   object_name(X(1), cam, sizeof(cam)), c->v[0].f[0], c->v[1].f[0], g_frame_count ? g_frame_count() : -1);
+            mk_log("trace GraphicRaycaster.Raycast camera '%s' at (%.0f, %.0f) frame %d", object_name(X(1), nm, sizeof(nm)),
+                   c->v[0].f[0], c->v[1].f[0], frame);
         else
-            mk_log("trace %s '%s' frame %d", off == 0x24559bc ? "ExecuteEvents.Execute on" : "Graphic.Raycast",
-                   object_name(X(0), nm, sizeof(nm)), g_frame_count ? g_frame_count() : -1);
-        return;
+            mk_log("trace %s '%s' frame %d", off == 0x24559bc ? "ExecuteEvents.Execute on" : off == 0x246b7f0 ? "Graphic.Raycast" : "GraphicRaycaster on",
+                   object_name(X(0), nm, sizeof(nm)), frame);
+        if (off != 0x246c634) return;
     }
     if (off == 0x18f8eec) {  // UIJoystick.get_Direction: which joystick, and is it active
         static unsigned n;
