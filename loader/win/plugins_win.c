@@ -289,6 +289,17 @@ static void fullscreen_hotkey(void) {
     was = now;
 }
 
+// The cursor disappears in full screen although the game's own requests are overridden (the
+// player's mode switch hides it without them): show and free it again every 30 pumps.
+static void (*g_cursor_visible)(uint8_t);  // Cursor.set_visible / set_lockState (mk_input_icall)
+static void (*g_cursor_lock)(int32_t);
+static void keep_cursor(void) {
+    static unsigned n;
+    if (n++ % 30) return;
+    if (g_cursor_visible) g_cursor_visible(1);
+    if (g_cursor_lock) g_cursor_lock(0);
+}
+
 // main thread, from the engine's managed calls (il2cpp_runtime_invoke)
 void mk_plugins_pump(void) {
     static int busy;
@@ -297,6 +308,7 @@ void mk_plugins_pump(void) {
     if (g_ck_head) ck_pump();
     agc_pump();
     fullscreen_hotkey();
+    keep_cursor();
     dump_render();
     busy = 0;
 }
@@ -685,7 +697,34 @@ void mk_trace(uint64_t off, cpu *c) {
         return;
     }
     // the controller argument of the controller-selection checks (x1), by name (a managed field read)
-    if (off == 0x1d223f0 || off == 0x1d2dff8 || off == 0x19a5d28) {
+    // CheckControllerAlreadyUsed looks for the controller in the static ControllerData[4] of
+    // ControllerSelection (class pointer at IMG+0x3428b60, static fields +0xb8, array +8; a
+    // ControllerData's controller at +0x20): log the slots whenever they change
+    if (off == 0x1d223f0) {
+        static uint64_t last[4];
+        static unsigned n;
+        uint8_t *klass = *(uint8_t **)(uintptr_t)(IMG + 0x3428b60);
+        uint8_t *st = klass ? *(uint8_t **)(klass + 0xb8) : NULL;
+        uint8_t *arr = st ? *(uint8_t **)(st + 8) : NULL;
+        uint64_t now[4] = { 0 };
+        int len = arr ? (int)*(uint64_t *)(arr + 0x18) : -1;
+        for (int i = 0; i < 4 && i < len; i++) {
+            uint8_t *e = ((uint8_t **)(arr + 0x20))[i];
+            now[i] = e ? *(uint64_t *)(e + 0x20) : 0;
+        }
+        if (memcmp(now, last, sizeof(now)) && n++ < 200) {
+            memcpy(last, now, sizeof(now));
+            char nm[4][48];
+            for (int i = 0; i < 4; i++) {
+                strcpy(nm[i], "-");
+                if (now[i]) managed_ascii((void *)(uintptr_t)guest_call(c, f_1fdd67c, now[i], 0, 0, 0), nm[i], sizeof(nm[i]));
+            }
+            mk_log("trace ControllerSelection slots (%d): '%s' '%s' '%s' '%s' frame %d", len, nm[0], nm[1], nm[2], nm[3], g_frame_count ? g_frame_count() : -1);
+        }
+        return;
+    }
+    if (off == 0x1d2dff8) return;
+    if (off == 0x19a5d28) {
         static unsigned n;
         if (n++ >= 300) return;
         uint64_t ctl = off == 0x19a5d28 ? X(2) : X(1);
