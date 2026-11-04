@@ -1,14 +1,27 @@
 # Marble Knights Port（個人保存用）
 
-把 WayForward 的 Apple Arcade 遊戲 **Marble Knights**（已下架）的 iOS 版，移植到 Android（ARM64）自己玩。做法參考 Project Dream（Sonic Dream Team 的 Mac → Windows／Android）：
+把 WayForward 的 Apple Arcade 遊戲 **Marble Knights**（已下架）的 iOS 版，移植到 Android（ARM64）與 Windows（x64）自己玩。有兩條路線：
+
+**Android（Mach-O 載入）**：做法參考 Project Dream（Sonic Dream Team 的 Mac → Windows／Android）：
 
 - 不重新編譯遊戲。iOS 版的 `UnityFramework`（Mach-O，arm64）裡有 IL2CPP 執行環境＋遊戲程式，我們在 Android 上**直接載入這個 Mach-O**，把它需要的 iOS 系統呼叫換成 Android（bionic）的實作。
 - 引擎改用同版本（Unity 2019.4.17f1）的**官方 Android 播放器 `libunity.so`**，讓它透過標準的 `il2cpp_*` API 驅動 iOS 版的遊戲程式。
 - iOS 專用的東西（Metal 著色器、GameKit／Apple Arcade、GameController、觸覺回饋）另外轉換或做假的。
 
+**Windows（靜態重編譯）**
+
+- 照 Recompiled 的思路，`tools/a64toc.py` 把整份 `UnityFramework` 的 ARM64 程式（IL2CPP 執行環境＋遊戲程式，約 11 萬個函式）轉成 C，用 clang-cl 編成 `GameAssembly.dll`。
+- 引擎用同版本的官方 Windows IL2CPP 播放器 `UnityPlayer.dll`，`global-metadata.dat` 原樣沿用；Darwin 系統呼叫換成 Windows 的實作（`loader/win/`）。
+- 著色器沿用 Metal → GLSL 的轉換，以 `-force-gles30` 執行；PVRTC 貼圖在建置時解成 RGBA32。
+
 > **只做個人保存、自己玩，不公開發布**。IPA 和從裡面解出、產生的任何東西都不進 Git、不上雲端或 CI（見 [AGENTS.md](AGENTS.md)）。
 
-## 現況（2026-11-03）
+## 現況（2026-11-04）
+
+- **Windows**：可以從頭玩到關卡裡（手把、鍵盤）。還在修的：滑鼠當觸控（標題畫面、關卡的虛擬搖桿）、標題 → 選單偶爾在 GC 時閃退、只有全螢幕才有的破圖、地板光暈的 z-fighting。細節在 [notes/2026-11-03-pc-recomp-feasibility.md](notes/2026-11-03-pc-recomp-feasibility.md)。
+- **Android**：在 Thor 上跑到第一個場景；後來重心移到 Windows。
+
+### Android 的進度（2026-11-03）
 
 第一個里程碑的 **IL2CPP 那一半已經在 Thor 上跑通**（還沒接 `libunity.so`）：
 
@@ -24,6 +37,7 @@
 | 路徑 | 內容 |
 | --- | --- |
 | `loader/` | Android 端的 Mach-O 載入器與 Darwin→bionic 相容層（C／組合語言，NDK 建置） |
+| `loader/win/` | Windows 版 `GameAssembly.dll` 的執行環境、Darwin→Windows 相容層、外掛（FMOD、手把…）與啟動器 |
 | `loader/probe/` | 里程碑 1 的測試程式：載入 → 初始化 → `il2cpp_init` → 跑受控程式碼 |
 | `tools/` | 分析 `UnityFramework` 的腳本（不需第三方套件的 Mach-O 解析、呼叫圖、反組譯）、Thor 測試腳本 |
 | `docs/design.md` | 設計文件：架構、ABI 差異、剩下的工作與估計 |
@@ -53,3 +67,17 @@ python -I tools/build_apk.py      # → out/marbleknights-private.apk（只裝�
 bash tools/thor-push-raw.sh       # 第一次：把 Data/Raw（3.4 GB）推到 App 的外部 files 資料夾
 bash tools/thor-apk.sh 45         # 安裝、啟動、抓 logcat 與截圖到 work/
 ```
+
+## Windows 建置（tailsmachine）
+
+需要 VS 2022 Build Tools、LLVM（clang-cl、lld-link）、Python 3；Unity 2019.4.17f1 Editor 與 Windows IL2CPP 模組解到 `work/unity/`（從 Unity 官方下載，用 7-Zip 解開，不執行安裝程式）。IPA 解到 `work/ipa/`。
+
+```bash
+python -I tools/build_win.py         # 組出 work/win/MarbleKnights/（官方播放器＋iOS 的 Data）
+python -I tools/win_textures.py      # PVRTC → RGBA32（bundle 就地改寫，其餘放 work/win/patched-data）
+python -I tools/prelink_win.py       # Mach-O 映像 → work/win/image
+python -E -X utf8 tools/a64toc.py --all   # ARM64 → C（work/win/gen），拿 heavy-build 鎖
+bash tools/build_win_ga.sh           # 編 GameAssembly.dll 並放進 work/win/MarbleKnights（約 5 分鐘；--runtime-only 只重編執行環境）
+```
+
+產生的東西全部在 `work/`，不進 Git。
