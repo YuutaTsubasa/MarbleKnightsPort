@@ -602,6 +602,34 @@ void mk_runtime_start(void) {
 // Hardware exceptions (first chance): log the code and where, before a crash handler or a silent
 // process exit (a stack overflow leaves no crash report) loses it. Translated functions are named
 // from GameAssembly.pdb; on a stack overflow only the address is logged (little stack is left).
+// Guest registers at a crash; a register that points at an object or an Il2CppClass gets the class
+// name (Il2CppClass: name at +0x10, namespace at +0x18).
+static int class_name_at(uint64_t k, char *out, int n) {
+    int ok = 0;
+    __try {
+        const char *nm = *(const char **)(uintptr_t)(k + 0x10), *ns = *(const char **)(uintptr_t)(k + 0x18);
+        if (nm && ns && nm[0] >= 'A' && nm[0] <= 'z' && strnlen(nm, 80) < 80 && strnlen(ns, 80) < 80) {
+            snprintf(out, n, "%s%s%s", ns, ns[0] ? "." : "", nm);
+            ok = 1;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) { ok = 0; }
+    return ok;
+}
+static void log_guest_registers(void) {
+    cpu *g = mk_current_cpu();
+    if (!g) return;
+    for (int i = 0; i < 31; i++) {
+        uint64_t v = g->x[i], k = 0;
+        char nm[180] = "";
+        if (v > 0x10000 && !class_name_at(v, nm, sizeof(nm))) {
+            __try { k = *(uint64_t *)(uintptr_t)v & ~1ull; } __except (EXCEPTION_EXECUTE_HANDLER) { k = 0; }
+            if (k > 0x10000 && class_name_at(k, nm + 9, sizeof(nm) - 9)) memcpy(nm, "object of", 9);
+            else nm[0] = 0;
+        }
+        mk_log("  guest x%d=%#llx %s", i, (unsigned long long)v, nm);
+    }
+}
+
 static LONG CALLBACK log_exception(EXCEPTION_POINTERS *ep) {
     static volatile LONG logged;
     DWORD code = ep->ExceptionRecord->ExceptionCode;
@@ -633,6 +661,7 @@ static LONG CALLBACK log_exception(EXCEPTION_POINTERS *ep) {
     mk_log("exception %#lx at %s+%#llx (%s+%#llx), address %#llx", code, base, (unsigned long long)(pc - (uint64_t)(uintptr_t)mod),
            named ? si->Name : "?", (unsigned long long)disp,
            (unsigned long long)(ep->ExceptionRecord->NumberParameters > 1 ? ep->ExceptionRecord->ExceptionInformation[1] : 0));
+    if (mod == GetModuleHandleA("GameAssembly.dll")) log_guest_registers();
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
