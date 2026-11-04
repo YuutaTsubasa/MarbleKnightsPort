@@ -840,5 +840,18 @@ __declspec(dllexport) int il2cpp_init(const char *domain) {
     int r = real_il2cpp_init((uintptr_t)domain);
     mk_log("il2cpp_init -> %d", r);
     register_ios_icalls();
+    // test switch: a file named mk_nogc next to the exe turns the garbage collector off, to tell
+    // whether a bug comes from objects that are collected while still in use
+    char path[MAX_PATH];
+    DWORD n = GetModuleFileNameA(NULL, path, MAX_PATH);
+    while (n && path[n - 1] != '\\') n--;
+    if (n && n + 8 < MAX_PATH) {
+        strcpy(path + n, "mk_nogc");
+        if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) {
+            void il2cpp_gc_disable(void);
+            il2cpp_gc_disable();
+            mk_log("mk_nogc: garbage collector disabled");
+        }
+    }
     return r;
 }
