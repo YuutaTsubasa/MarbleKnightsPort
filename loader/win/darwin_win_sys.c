@@ -46,7 +46,8 @@ SHIM(pthread_create) {  // (pthread_t *, attr, start, arg)
     t->start_fn = X(2);
     t->start_arg = X(3);
     *(mk_thread **)P(0) = t;
-    HANDLE h = CreateThread(NULL, 1 << 20, thread_start, t, 0, NULL);
+    // reserved only (committed as used), large enough for guest stacks on the host stack
+    HANDLE h = CreateThread(NULL, 64u << 20, thread_start, t, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
     if (!h) { RET(EAGAIN); return; }
     CloseHandle(h);  // the thread duplicates its own handle in mk_thread_bind
     RET(0);
@@ -59,8 +60,9 @@ SHIM(pthread_join) {
     RET(0);
 }
 SHIM(pthread_detach) { ((mk_thread *)P(0))->detached = 1; RET(0); }
-SHIM(pthread_get_stackaddr_np) { mk_thread *t = P(0); RET(t->gstack + t->gsize); }
-SHIM(pthread_get_stacksize_np) { RET(((mk_thread *)P(0))->gsize); }
+// the stack the GC scans for the thread: the host stack when guest stacks live on it
+SHIM(pthread_get_stackaddr_np) { mk_thread *t = P(0); RET(t->inline_stack ? t->hbase : t->gstack + t->gsize); }
+SHIM(pthread_get_stacksize_np) { mk_thread *t = P(0); RET(t->inline_stack ? (size_t)(t->hbase - t->hlow) : t->gsize); }
 SHIM(pthread_mach_thread_np) { RET(((mk_thread *)P(0))->port); }
 SHIM(pthread_threadid_np) { mk_thread *t = X(0) ? P(0) : mk_self(); *(uint64_t *)P(1) = t->tid; RET(0); }
 SHIM(mach_thread_self) { RET(mk_self()->port); }
@@ -69,8 +71,12 @@ SHIM(thread_suspend) {
     if (!t || !t->handle) { RET(4); return; }
     if (SuspendThread(t->handle) == (DWORD)-1) { RET(5); return; }
     CONTEXT ctx = { 0 };
-    ctx.ContextFlags = CONTEXT_CONTROL;
+    ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
     GetThreadContext(t->handle, &ctx);  // waits until the thread is really stopped
+    const DWORD64 r[16] = { ctx.Rax, ctx.Rcx, ctx.Rdx, ctx.Rbx, ctx.Rsp, ctx.Rbp, ctx.Rsi, ctx.Rdi,
+                            ctx.R8, ctx.R9, ctx.R10, ctx.R11, ctx.R12, ctx.R13, ctx.R14, ctx.R15 };
+    for (int i = 0; i < 16; i++) t->host_regs[i] = r[i];
+    t->host_sp = ctx.Rsp;
     t->suspended = 1;
     RET(0);
 }
@@ -81,8 +87,10 @@ SHIM(thread_resume) {
     ResumeThread(t->handle);
     RET(0);
 }
-// thread_get_state(port, ARM_THREAD_STATE64 = 6, state, &count): the guest registers of the
-// thread's innermost guest frame (x0..x28, fp, lr, sp, pc, cpsr)
+// thread_get_state(port, ARM_THREAD_STATE64 = 6, state, &count) (x0..x28, fp, lr, sp, pc, cpsr).
+// The GC scans the thread's stack from this sp and the registers as roots. With guest stacks on
+// the host stack: the host rsp and integer registers at suspension (the guest register files are
+// cpu structs on that stack); otherwise the guest registers of the innermost guest frame.
 SHIM(thread_get_state) {
     mk_thread *t = mk_thread_by_port(U(0));
     uint64_t *st = P(2);
@@ -90,7 +98,10 @@ SHIM(thread_get_state) {
     if (!t || I(1) != 6 || *count < 68) { RET(4); return; }
     memset(st, 0, 68 * 4);
     cpu *g = t->cur;
-    if (g) {
+    if (t->inline_stack && t->suspended) {
+        for (int i = 0; i < 16; i++) st[i] = t->host_regs[i];
+        st[31] = t->host_sp;
+    } else if (g) {
         for (int i = 0; i < 31; i++) st[i] = g->x[i];
         st[31] = g->x[31];
     } else st[31] = (uint64_t)(uintptr_t)(t->gstack + t->gsize);

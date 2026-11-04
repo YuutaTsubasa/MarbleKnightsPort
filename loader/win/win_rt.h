@@ -23,8 +23,15 @@ void mk_imp(cpu *c, int k);  // generated imp_N(c) call this
 typedef struct mk_thread {
     uint32_t tid, port;
     void *handle;              // HANDLE with suspend / get-context rights
-    uint8_t *gstack;           // guest stack (GUEST_STACK bytes)
+    uint8_t *gstack;           // separate guest stack (GUEST_STACK bytes), only when !inline_stack
     size_t gsize;
+    // Guest stacks on the host stack (inline_stack): each guest entry takes its guest stack from the
+    // host stack, so the one range the GC scans for this thread, [sp, hbase), covers the guest
+    // frames, the cpu structs and the host frames (Unity's native code) holding managed pointers.
+    int inline_stack;
+    uint8_t *hbase, *hlow;     // host stack: base (highest address) and reserved low end
+    uint8_t *glow;             // low end of the innermost guest stack region
+    uint64_t host_sp, host_regs[16];  // a suspended thread's host rsp and integer registers
     cpu *volatile cur;         // innermost active guest register file, NULL outside guest code
     uint64_t start_fn, start_arg, result;  // pthread_create / pthread_join
     int detached, suspended;

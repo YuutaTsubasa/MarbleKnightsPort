@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <malloc.h>
 #include <windows.h>
 
 #include <dbghelp.h>
@@ -354,12 +355,27 @@ mk_thread *mk_thread_new(void) {
     if (i >= MAX_THREADS) mk_fatal("too many threads");
     mk_thread *t = &g_threads[i];
     t->port = 0x1000 + (uint32_t)i;
-    t->gsize = GUEST_STACK;
-    t->gstack = VirtualAlloc(NULL, GUEST_STACK, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (!t->gstack) mk_fatal("no memory for a guest stack");
     return t;
 }
+// A thread whose host stack has room for guest stacks keeps them there (mk_thread.inline_stack);
+// the others (small stacks made by Unity) get a separate guest stack, which the GC scans alone.
+#define INLINE_MIN_HOST_STACK (8u << 20)
 void mk_thread_bind(mk_thread *t) {  // called on the thread itself
+    ULONG_PTR lo, hi;
+    GetCurrentThreadStackLimits(&lo, &hi);
+    t->hlow = (uint8_t *)lo;
+    t->hbase = (uint8_t *)hi;
+    t->inline_stack = hi - lo >= INLINE_MIN_HOST_STACK;
+    if (t->inline_stack) {
+        t->gstack = t->hlow;
+        t->gsize = (size_t)(hi - lo);
+    } else {
+        t->gsize = GUEST_STACK;
+        t->gstack = VirtualAlloc(NULL, GUEST_STACK, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (!t->gstack) mk_fatal("no memory for a guest stack");
+        mk_log("thread %lu: host stack %llu KB, guest stack kept apart (the GC does not see its host frames)",
+               GetCurrentThreadId(), (unsigned long long)((hi - lo) >> 10));
+    }
     t->tid = GetCurrentThreadId();
     t->tsd[0] = (uint64_t)(uintptr_t)t;
     HANDLE h;
@@ -395,22 +411,46 @@ static int log_escape(void *ep, uint64_t target) {
 }
 cpu *mk_current_cpu(void) { mk_thread *t = TlsGetValue(g_tls_self); return t ? t->cur : NULL; }
 
+// guest stack region per entry on an inline_stack thread: outermost entries get more (they run
+// whole frames of game code), nested ones (guest -> host -> guest) less; never below the minimum
+#define GUEST_REGION_OUTER (2u << 20)
+#define GUEST_REGION_NESTED (1u << 20)
+#define GUEST_REGION_MIN (128u << 10)
 uint64_t mk_guest_enter(uint64_t target, const uint64_t *x, int nx, const double *v, int nv, double *fret) {
     mk_thread *t = mk_self();
     cpu *outer = t->cur;
+    uint8_t *outer_glow = t->glow;
+    // the host registers at entry, kept in this frame: the caller's callee-saved registers may hold
+    // managed pointers, and the GC sees this frame (it is above the guest region)
+    volatile CONTEXT regs;
+    RtlCaptureContext((CONTEXT *)&regs);
     cpu c;
     memset(&c, 0, sizeof(c));
     for (int i = 0; i < nx && i < 8; i++) c.x[i] = x[i];
     for (int i = 0; i < nv && i < 8; i++) c.v[i].d[0] = v[i];
-    uint64_t sp = outer ? outer->x[31] - 512 : (uint64_t)(uintptr_t)(t->gstack + t->gsize - 256);
+    uint64_t sp;
+    if (t->inline_stack) {
+        uint8_t *here = (uint8_t *)&c;
+        size_t avail = here > t->hlow + (256u << 10) ? (size_t)(here - t->hlow) - (256u << 10) : 0;
+        size_t size = outer ? GUEST_REGION_NESTED : GUEST_REGION_OUTER;
+        if (size > avail / 2) size = avail / 2 & ~(size_t)15;
+        if (size < GUEST_REGION_MIN) mk_fatal("host stack exhausted entering the guest (%zu bytes left)", avail);
+        uint8_t *region = _alloca(size);
+        t->glow = region;
+        sp = (uint64_t)(uintptr_t)(region + size - 256);
+    } else {
+        sp = outer ? outer->x[31] - 512 : (uint64_t)(uintptr_t)(t->gstack + t->gsize - 256);
+        t->glow = t->gstack;
+    }
     sp &= ~15ull;
-    if (sp < (uint64_t)(uintptr_t)t->gstack + 65536) mk_fatal("guest stack overflow");
+    if (sp < (uint64_t)(uintptr_t)t->glow + 65536 && !t->inline_stack) mk_fatal("guest stack overflow");
     c.x[31] = sp;
     t->cur = &c;
     __try {
         __try { dispatch(&c, target); }
         __except (log_escape(GetExceptionInformation(), target)) {}
-    } __finally { t->cur = outer; }
+    } __finally { t->cur = outer; t->glow = outer_glow; }
+    (void)regs;
     if (fret) *fret = c.v[0].d[0];
     return c.x[0];
 }

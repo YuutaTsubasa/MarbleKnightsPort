@@ -41,7 +41,8 @@ MSYS_NO_PATHCONV=1 "$llvm/lld-link.exe" /nologo /DLL /DEBUG "/PDB:$(cygpath -w "
 # the game's icon (tools/win_icon.py) as the launcher's resources
 [ -f "$w/icon.ico" ] || python -I "$here/tools/win_icon.py"
 MSYS_NO_PATHCONV=1 "$llvm/llvm-rc.exe" /nologo "/I$(cygpath -w "$w")" "/FO$(cygpath -w "$w/launcher.res")" "$(cygpath -w "$here/loader/win/launcher.rc")"
-MSYS_NO_PATHCONV=1 "$llvm/clang-cl.exe" /nologo /O2 "$(cygpath -w "$here/loader/win/launcher.c")" "/Fe$(cygpath -w "$w/launcher.exe")" "/Fo$(cygpath -w "$w/obj/launcher.o")" /link /SUBSYSTEM:WINDOWS user32.lib "$(cygpath -w "$w/launcher.res")"
+# /STACK: the main thread keeps guest stacks on its host stack (win_rt.c), so it needs room (reserved, committed as used)
+MSYS_NO_PATHCONV=1 "$llvm/clang-cl.exe" /nologo /O2 "$(cygpath -w "$here/loader/win/launcher.c")" "/Fe$(cygpath -w "$w/launcher.exe")" "/Fo$(cygpath -w "$w/obj/launcher.o")" /link /SUBSYSTEM:WINDOWS /STACK:268435456 user32.lib "$(cygpath -w "$w/launcher.res")"
 python -I "$here/tools/build_win.py" --gameassembly "$w/GameAssembly.dll"
 mkdir -p "$w/MarbleKnights/MarbleKnights_Data/mk"
 cp -u "$w/image/"* "$w/MarbleKnights/MarbleKnights_Data/mk/"
