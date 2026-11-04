@@ -591,7 +591,32 @@ static const struct { uint64_t off; const char *name; } g_trace_names[] = {
     { 0x23f2d74, "UnityEvent.Invoke" }, { 0x249cf40, "UISystemProfilerApi.AddMarker" }, { 0x1d66554, "BootstrapTitleScreen.Update" },
     { 0x1d666d0, "BootstrapTitleScreen.IsAnyButtonPressed" }, { 0x1d66d00, "BootstrapTitleScreen.HandlePressAnyButton" },
 };
+extern const char *g_recent_cbs[8];
+extern unsigned g_recent_cb_n;
+static const char *trace_name(uint64_t off) {
+    for (size_t i = 0; i < sizeof(g_trace_names) / sizeof(g_trace_names[0]); i++) if (g_trace_names[i].off == off) return g_trace_names[i].name;
+    return NULL;
+}
 void mk_trace(uint64_t off, cpu *c) {
+    // the last traced entries, dumped when an exception is raised
+    static uint64_t recent[16];
+    static unsigned recent_n;
+    // il2cpp::vm::Exception::Raise(exception): every managed exception, thrown by the game or by the engine
+    if (off == 0xe5f708) {
+        static unsigned n;
+        if (n++ >= 20) return;
+        uint8_t *ex = (uint8_t *)(uintptr_t)X(0);
+        const char *cls = ex && *(uintptr_t *)ex ? *(const char **)((*(uintptr_t *)ex & ~(uintptr_t)1) + 0x10) : "?";
+        mk_log("trace exception %s raised frame %d; last traced:", cls, g_frame_count ? g_frame_count() : -1);
+        for (unsigned k = recent_n > 16 ? recent_n - 16 : 0; k < recent_n; k++) {
+            const char *nm = trace_name(recent[k & 15]);
+            mk_log("    %s (%#llx)", nm ? nm : "?", (unsigned long long)recent[k & 15]);
+        }
+        mk_log("  last host callbacks:");
+        for (unsigned k = g_recent_cb_n > 8 ? g_recent_cb_n - 8 : 0; k < g_recent_cb_n; k++) mk_log("    %s", g_recent_cbs[k & 7]);
+        return;
+    }
+    recent[recent_n++ & 15] = off;
     // UI raycasts (findings in docs/notes/2026-11-03-pc-recomp-feasibility.md): no longer logged. Naming
     // objects means calling into the engine from inside translated code, which is not safe here.
     if (off == 0x24559bc || off == 0x246b7f0 || off == 0x246d56c || off == 0x246c634 || off == 0x18f8eec) return;
@@ -660,7 +685,6 @@ void mk_trace(uint64_t off, cpu *c) {
     // +0x10 m_Calls (List<PersistentCall>: +0x10 _items, +0x18 _size; array elements from +0x20).
     if (off == 0x23f31ec || off == 0x23f2768) {
         static unsigned n;
-        if (n++ >= 100) return;
         uint8_t *ev = (uint8_t *)(uintptr_t)(off == 0x23f31ec ? X(0) : X(2));
         uint8_t *grp = off == 0x23f31ec ? (ev ? *(uint8_t **)(ev + 0x18) : NULL) : (uint8_t *)(uintptr_t)X(0);
         uint8_t *lst = grp ? *(uint8_t **)(grp + 0x10) : NULL;
@@ -668,6 +692,7 @@ void mk_trace(uint64_t off, cpu *c) {
         int size = lst ? *(int *)(lst + 0x18) : -1;
         char first[64] = "-";
         uint8_t *pc0 = items && size > 0 ? *(uint8_t **)(items + 0x20) : NULL;
+        if (size == 0 || n++ >= 100) return;  // events without persistent calls are most of them
         if (pc0) managed_ascii(*(void **)(pc0 + 0x18), first, sizeof(first));
         mk_log("trace %s event %p dirty %d calls %p group %p list %p size %d first %p '%s' frame %d",
                off == 0x23f31ec ? "UnityEventBase.RebuildPersistentCallsIfNeeded" : "PersistentCallGroup.Initialize",

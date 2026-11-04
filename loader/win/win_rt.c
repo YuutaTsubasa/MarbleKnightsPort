@@ -241,8 +241,12 @@ static icall_sig *icall_signature(const char *name) {
     return sg;
 }
 typedef uint64_t (*host8)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+// the last host callbacks (icalls) made, for tracing where an exception came from (plugins_win.c)
+const char *g_recent_cbs[8];
+unsigned g_recent_cb_n;
 static void call_host_cb(cpu *c, uint32_t i) {
     host_cb *h = &g_cbs[i];
+    g_recent_cbs[g_recent_cb_n++ & 7] = h->what;
     if (!h->sig_state) {
         h->sig_state = 1;
         if (strstr(h->what, "::")) h->sig = icall_signature(h->what);
