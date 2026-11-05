@@ -5,11 +5,11 @@
   "type": "recomp",
   "original": { "region": "World", "revision": "2.3.1 (760642)" },
   "project": "Marble Knights Recompiled",
-  "status": "playable",
+  "status": "released",
   "targets": ["Windows", "Android"],
   "toolchain": "a64toc (own ARM64 to C translator)",
   "approach": "Windows: ARM64 code recompiled to C under the Unity Windows player. Android: the iOS code loaded directly under the Unity Android player.",
   "started": "2026-11-03",
   "maintainers": [{ "name": "YuutaTsubasa", "link": "https://github.com/YuutaTsubasa" }],
-  "links": [{ "url": "https://github.com/YuutaTsubasa/MarbleKnightsRecompiled", "label": "Repository" }]
+  "links": [{ "url": "https://github.com/YuutaTsubasa/MarbleKnightsRecompiled/releases", "label": "Releases" }]
 }
