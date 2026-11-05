@@ -93,6 +93,10 @@ static const code_patch g_unity_patches[] = {
     // InitializeGfxDevice: a forced renderer (-force-gles30) must appear in BuildSettings' graphics
     // API list, which for the iOS build only holds Metal. `b.ne ok` -> `b ok`.
     { 0x88ba00, 0x54000841, 0x14000042, "InitializeGfxDevice graphics API list" },
+    // Picking the GLES version: none of the build's APIs (Metal only) is supported, so Unity asks
+    // "Your device does not match the hardware requirements" (gles-api-check) before falling back.
+    // Go straight to the fallback, which is what pressing Continue does. `tbnz w0, #0` -> `b`.
+    { 0x3b49d4, 0x370001c0, 0x1400000e, "gles-api-check warning" },
 };
 
 static int find_unity(struct dl_phdr_info *info, size_t size, void *data) {
