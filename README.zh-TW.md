@@ -7,7 +7,7 @@
 **本專案不含任何遊戲資料。** 遊戲要自己準備（iOS 版 *Marble Knights* 2.3.1，build 760642），啟動器在你的電腦上把它轉成能玩的資料夾或 Android APK。建置或分享任何東西之前，請先讀 [LEGAL.md](LEGAL.md)。
 
 > [!IMPORTANT]
-> 還在開發中，沒有發布版本。Windows 上已經能開機、進關卡玩，但還有幾個地方是壞的（見[現況](#現況)）。
+> 這是早期的預先發布版，只在一台 Windows 電腦（NVIDIA 顯示卡）和一台 Android 裝置上測過（見[現況](#現況)）。請到 [Releases](https://github.com/YuutaTsubasa/MarbleKnightsRecompiled/releases) 下載。
 
 ## 現況
 

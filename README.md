@@ -17,9 +17,9 @@ folder or an Android APK on your own computer. Read [LEGAL.md](LEGAL.md) before
 building or sharing anything.
 
 > [!IMPORTANT]
-> This is a work in progress, and there are no releases. The game boots and
-> its levels can be played on Windows, but several things are still broken
-> (see [Status](#status)).
+> This is an early pre-release, tested on one Windows PC with an NVIDIA GPU and
+> one Android device (see [Status](#status)). Download it from
+> [Releases](https://github.com/YuutaTsubasa/MarbleKnightsRecompiled/releases).
 
 ## Table of Contents
 
@@ -60,7 +60,8 @@ Only tested on Windows 11 with an NVIDIA GPU and on one arm64 Android device. Th
 
 ## Playing (the launcher)
 
-A release folder (made by `tools/package_win.py`) has no game data. Open
+A release (from [Releases](https://github.com/YuutaTsubasa/MarbleKnightsRecompiled/releases),
+or made by `tools/package_win.py`) has no game data. Unzip it and open
 `MarbleKnightsLauncher.exe`:
 
 1. Choose your own IPA and press Prepare (a minute or two; needs 3.5 GB). The

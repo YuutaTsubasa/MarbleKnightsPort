@@ -42,7 +42,7 @@ LIB = os.path.abspath(arg("--lib") or os.path.join(WORK, "build-android", "libil
 
 MANIFEST = """<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{package}"
-    android:versionCode="1" android:versionName="0.0.1" android:installLocation="preferExternal">
+    android:versionCode="1" android:versionName="0.1.0" android:installLocation="preferExternal">
   <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="29" />
   <uses-feature android:glEsVersion="0x00030000" />
   <uses-permission android:name="android.permission.VIBRATE" />

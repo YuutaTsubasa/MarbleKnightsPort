@@ -22,7 +22,7 @@ app, no link to one and no help finding one.
 To build from source you also need Unity 2019.4.17f1 (the Editor and Windows
 Build Support), which you download from Unity yourself under Unity's terms.
 
-## What the build produces, and what the releases will contain
+## What the build produces, and what the releases contain
 
 The build writes C into `work/win/gen`: a machine translation of the ARM64
 code in `UnityFramework`. That code is the game's compiled C#, plus the parts
@@ -36,7 +36,7 @@ shaders, scenes or text, and it does nothing without the game's own data
 (`global-metadata.dat`, the scenes and the asset bundles), which come only
 from your copy of the app.
 
-When this project publishes releases, they will contain:
+The releases contain:
 
 - our own code (the launcher and the runtime);
 - the recompiled `GameAssembly.dll`;

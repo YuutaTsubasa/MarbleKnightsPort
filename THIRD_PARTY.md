@@ -1,8 +1,8 @@
 # Third-party components
 
 Nothing third-party is included in this repository. Building from source
-depends on the following, which you obtain yourself. Releases, when there are
-any, will include the components marked below. None of it is game data; see
+depends on the following, which you obtain yourself. Releases include the
+components marked below. None of it is game data; see
 [LEGAL.md](LEGAL.md) for that.
 
 | Component | Used for | Where it comes from |
