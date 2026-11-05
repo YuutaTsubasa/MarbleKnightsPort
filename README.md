@@ -54,7 +54,9 @@ Known problems:
 |---|---|
 | Windows (x64) | plays |
 | Android (ARM64) | plays (about 60 fps on the author's device): the iOS `UnityFramework` loaded directly (Mach-O loader) under Unity's Android player |
-| Linux, macOS | not started |
+| Linux, macOS | not started; see [docs/platforms.md](docs/platforms.md) (Traditional Chinese) for Proton, PlayCover, sideloading and other Android devices |
+
+Only tested on Windows 11 with an NVIDIA GPU and on one arm64 Android device. The Windows build asks the GPU driver for an OpenGL ES 3 context; AMD and Intel drivers are untested.
 
 ## Playing (the launcher)
 

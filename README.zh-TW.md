@@ -26,7 +26,9 @@ Windows 上能用的：
 |---|---|
 | Windows（x64） | 能玩 |
 | Android（ARM64） | 能玩（作者的裝置上約 60 fps）：用 Mach-O 載入器直接載入 iOS 的 `UnityFramework`，配 Unity 官方 Android 播放器 |
-| Linux、macOS | 還沒開始 |
+| Linux、macOS | 還沒開始；Proton、PlayCover、側載與其他 Android 裝置的判斷見 [docs/platforms.md](docs/platforms.md) |
+
+只在 Windows 11＋NVIDIA 顯示卡與一台 arm64 Android 裝置上測過。Windows 版要顯示卡驅動提供 OpenGL ES 3 context，AMD、Intel 的驅動還沒測。
 
 ## 遊玩（啟動器）
 
