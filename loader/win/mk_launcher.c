@@ -94,8 +94,8 @@ static void update_state(void) {
                     : g_busy && g_job == 1 ? T(L"Making the Android version...", L"正在製作 Android 版…")
                     : aready ? T(L"Ready: copy the MarbleKnights folder to the top of the phone's storage, then install MarbleKnights.apk.",
                                  L"做好了：把 MarbleKnights 資料夾複製到手機儲存空間最上層，再安裝 MarbleKnights.apk。")
-                    : T(L"Makes MarbleKnights.apk and a 3.4 GB data folder for an Android phone (arm64) from the same IPA.",
-                        L"用同一份 IPA 做出 Android 手機（arm64）用的 MarbleKnights.apk 和 3.4 GB 的資料夾。"));
+                    : T(L"Makes MarbleKnights.apk and a 3.9 GB data folder for an Android phone (arm64) from the same IPA.",
+                        L"用同一份 IPA 做出 Android 手機（arm64）用的 MarbleKnights.apk 和 3.9 GB 的資料夾。"));
     EnableWindow(GetDlgItem(g_wnd, ID_ANDROID), base && !g_busy && GetWindowTextLengthW(GetDlgItem(g_wnd, ID_IPA)) > 0);
     SetDlgItemTextW(g_wnd, ID_ANDROID, aready ? T(L"Make again", L"重新製作") : T(L"Make APK", L"製作 APK"));
     EnableWindow(GetDlgItem(g_wnd, ID_ANDROID_FOLDER), exists(L"android"));

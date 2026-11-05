@@ -41,7 +41,7 @@ Steam Deck 是 x86，Android 版（只有 arm64）不能用 Waydroid 之類的�
 | CPU | 只有 arm64-v8a（`UnityFramework` 是 arm64 的機器碼，在裝置上直接執行）。32 位元手機、x86 的模擬器與 Chromebook 不行 |
 | 系統 | Android 7.0（API 24）以上。**已測**：Android 13（Thor） |
 | 顯示 | OpenGL ES 3.0 以上 |
-| 空間 | 約 3.5 GB：APK 87 MB，加上放在內部儲存空間最上層的 `MarbleKnights` 資料夾 3.4 GB |
+| 空間 | 約 4 GB：APK 87 MB，加上放在內部儲存空間最上層的 `MarbleKnights` 資料夾 3.9 GB |
 | 權限 | 第一次開啟要允許「檔案和媒體」（targetSdk 29＋`requestLegacyExternalStorage`，Android 11 以後仍有效） |
 
 Adreno 以外的 GPU（Mali、PowerVR、Xclipse）沒測。Android 版沒有先解開 PVRTC 貼圖（Adreno 沒有 PVRTC，在 Thor 上看起來是 Unity 自己處理掉了），其他 GPU 應該一樣，但沒驗證。

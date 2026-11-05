@@ -64,13 +64,13 @@ A release (from [Releases](https://github.com/YuutaTsubasa/MarbleKnightsRecompil
 or made by `tools/package_win.py`) has no game data. Unzip it and open
 `MarbleKnightsLauncher.exe`:
 
-1. Choose your own IPA and press Prepare (a minute or two; needs 3.5 GB). The
+1. Choose your own IPA and press Prepare (a few minutes; needs 8 GB). The
    launcher runs `tools/prepare_win.py` on the bundled Python; if it stops,
    pressing Prepare again carries on.
 2. Press Play. The options are starting in full screen and, for bug reports,
    turning off the garbage collector.
 3. Android: press Make APK. `tools/prepare_android.py` writes
-   `MarbleKnights.apk` and a 3.4 GB `MarbleKnights` folder into `android\`.
+   `MarbleKnights.apk` and a 3.9 GB `MarbleKnights` folder into `android\`.
    Copy the whole folder to the top of the phone's internal storage, then
    install the APK and allow file access when the game first asks. The APK is
    signed with a key the launcher makes the first time

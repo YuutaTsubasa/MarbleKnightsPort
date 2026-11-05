@@ -34,9 +34,9 @@ Windows 上能用的：
 
 Release 的資料夾（`tools/package_win.py` 做的）裡沒有遊戲資料，打開 `MarbleKnightsLauncher.exe`：
 
-1. 選你自己的 IPA，按「準備」（約 1–2 分鐘，要 3.5 GB 空間）。啟動器用附帶的 Python 跑 `tools/prepare_win.py`，中斷了再按一次會接著做。
+1. 選你自己的 IPA，按「準備」（幾分鐘，要 8 GB 空間）。啟動器用附帶的 Python 跑 `tools/prepare_win.py`，中斷了再按一次會接著做。
 2. 按「開始遊戲」。選項有「以全螢幕開始」與測試用的「關閉記憶體回收」。
-3. Android：按「製作 APK」，`tools/prepare_android.py` 在 `android\` 做出 `MarbleKnights.apk` 和 3.4 GB 的 `MarbleKnights` 資料夾。把資料夾整個複製到手機內部儲存空間的最上層，再安裝 APK；第一次開啟時允許存取檔案。APK 用啟動器第一次做 APK 時產生的金鑰（`android\signing-key.json`）簽，之後的 APK 要靠同一把金鑰才能直接覆蓋安裝。
+3. Android：按「製作 APK」，`tools/prepare_android.py` 在 `android\` 做出 `MarbleKnights.apk` 和 3.9 GB 的 `MarbleKnights` 資料夾。把資料夾整個複製到手機內部儲存空間的最上層，再安裝 APK；第一次開啟時允許存取檔案。APK 用啟動器第一次做 APK 時產生的金鑰（`android\signing-key.json`）簽，之後的 APK 要靠同一把金鑰才能直接覆蓋安裝。
 
 ## 做法
 
