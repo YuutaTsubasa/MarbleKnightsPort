@@ -695,6 +695,30 @@ void mk_trace(uint64_t off, cpu *c) {
         return;
     }
     recent[recent_n++ & 15] = off;
+    // ControllerSelection's Continue button: HandleContinueButtonFade (every frame) sets its CanvasGroup
+    // alpha, and Continue only proceeds when that alpha reads exactly 1.0
+    {
+        static uint64_t fade_site, fade_cg;
+        static float fade_val;
+        static int64_t fade_needed;
+        switch (off) {
+        case 0x1d272ec: case 0x1d273f0: case 0x1d27404: case 0x1d27458: case 0x1d2746c: case 0x1d2757c: case 0x1d27590:
+        case 0x1d23b70: case 0x1d23cb8: case 0x1d23cd4: case 0x1d23e44: case 0x1d23e60:
+            if (off != fade_site || c->v[0].f[0] != fade_val)
+                mk_log("trace continue fade: site %#llx alpha %g cg %#llx needed+1 %lld frame %d", (unsigned long long)off, c->v[0].f[0],
+                       (unsigned long long)X(0), (long long)fade_needed, g_frame_count ? g_frame_count() : -1);
+            fade_site = off; fade_val = c->v[0].f[0]; fade_cg = X(0);
+            return;
+        case 0x1d27514: case 0x1d275dc:  // GetAssignedControllerCount, compared with w20 + 1
+            fade_needed = (int32_t)X(20) + 1;
+            return;
+        case 0x1d25d6c: case 0x1d25d84: case 0x1d25e14: case 0x1d25e34:
+            mk_log("trace Continue reached %#llx (x0 %#llx; last fade site %#llx alpha %g cg %#llx needed+1 %lld) frame %d",
+                   (unsigned long long)off, (unsigned long long)X(0), (unsigned long long)fade_site, fade_val,
+                   (unsigned long long)fade_cg, (long long)fade_needed, g_frame_count ? g_frame_count() : -1);
+            return;
+        }
+    }
     // UI raycasts (findings in docs/notes/2026-11-03-pc-recomp-feasibility.md): no longer logged. Naming
     // objects means calling into the engine from inside translated code, which is not safe here.
     if (off == 0x24559bc || off == 0x246b7f0 || off == 0x246d56c || off == 0x246c634 || off == 0x18f8eec) return;
