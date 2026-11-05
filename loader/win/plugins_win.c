@@ -273,6 +273,7 @@ static void dump_render(void) {
 // directly (bypassing the compositor), so screen recorders captured black. Unity stays in windowed
 // mode; 300 ms after its resize (applied at the end of a frame), the frame comes off and the window covers the monitor.
 static HWND g_fs_wnd;
+static int32_t (*g_frame_count)(void);  // Time.get_frameCount (mk_input_icall)
 static int g_fs_on;
 static ULONGLONG g_fs_pending;  // GetTickCount64 time to take the frame off, 0 for none
 static void fullscreen_apply(void) {
@@ -286,33 +287,40 @@ static void fullscreen_apply(void) {
     GetWindowRect(g_fs_wnd, &w);
     mk_log("display: borderless %ldx%ld at (%ld, %ld)", w.right - w.left, w.bottom - w.top, w.left, w.top);
 }
-static void fullscreen_hotkey(void) {
-    static int was;
-    if (g_fs_pending && GetTickCount64() >= g_fs_pending) { g_fs_pending = 0; fullscreen_apply(); }
-    int now = own_window_focused() && ((key(VK_MENU) && key(VK_RETURN)) || (key(VK_F4) && !key(VK_MENU)));
-    if (now && !was) {
-        uint8_t (*is_full)(void) = (uint8_t (*)(void))mk_find_icall("UnityEngine.Screen::get_fullScreen");
-        void (*set_res)(int32_t, int32_t, int32_t, int32_t) =
-            (void (*)(int32_t, int32_t, int32_t, int32_t))mk_find_icall("UnityEngine.Screen::SetResolution");
-        if (is_full && set_res) {
-            int full = g_fs_on || (is_full() & 0xff);  // the player's own full screen, from an earlier run
-            g_fs_wnd = GetForegroundWindow();
-            HMONITOR mon = MonitorFromWindow(g_fs_wnd, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO mi = { sizeof(mi) };
-            GetMonitorInfoA(mon, &mi);
-            int mw = mi.rcMonitor.right - mi.rcMonitor.left, mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
-            if (full) {
-                if (g_fs_on) SetWindowLongPtrA(g_fs_wnd, GWL_STYLE, (GetWindowLongPtrA(g_fs_wnd, GWL_STYLE) & ~(LONG_PTR)WS_POPUP) | WS_OVERLAPPEDWINDOW);
-                set_res(1280, 720, 3 /* Windowed */, 0);
-                g_fs_on = g_fs_pending = 0;
-            } else {
-                set_res(mw, mh, 3 /* Windowed */, 0);
-                g_fs_on = 1;
-                g_fs_pending = GetTickCount64() + 300;
-            }
-            mk_log("display: %s", full ? "windowed 1280x720" : "full screen");
-        }
+static void fullscreen_toggle(void) {
+    uint8_t (*is_full)(void) = (uint8_t (*)(void))mk_find_icall("UnityEngine.Screen::get_fullScreen");
+    void (*set_res)(int32_t, int32_t, int32_t, int32_t) =
+        (void (*)(int32_t, int32_t, int32_t, int32_t))mk_find_icall("UnityEngine.Screen::SetResolution");
+    if (!is_full || !set_res) return;
+    int full = g_fs_on || (is_full() & 0xff);  // the player's own full screen, from an earlier run
+    g_fs_wnd = GetForegroundWindow();
+    HMONITOR mon = MonitorFromWindow(g_fs_wnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    GetMonitorInfoA(mon, &mi);
+    int mw = mi.rcMonitor.right - mi.rcMonitor.left, mh = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    if (full) {
+        if (g_fs_on) SetWindowLongPtrA(g_fs_wnd, GWL_STYLE, (GetWindowLongPtrA(g_fs_wnd, GWL_STYLE) & ~(LONG_PTR)WS_POPUP) | WS_OVERLAPPEDWINDOW);
+        set_res(1280, 720, 3 /* Windowed */, 0);
+        g_fs_on = 0;
+        g_fs_pending = 0;
+    } else {
+        set_res(mw, mh, 3 /* Windowed */, 0);
+        g_fs_on = 1;
+        g_fs_pending = GetTickCount64() + 300;
     }
+    mk_log("display: %s", full ? "windowed 1280x720" : "full screen");
+}
+static void fullscreen_hotkey(void) {
+    static int was, start_checked;
+    if (g_fs_pending && GetTickCount64() >= g_fs_pending) { g_fs_pending = 0; fullscreen_apply(); }
+    // the launcher's "start in full screen" (MK_FULLSCREEN=1; it also starts Unity windowed)
+    if (!start_checked && g_frame_count && g_frame_count() > 30 && own_window_focused()) {
+        start_checked = 1;
+        char v[4] = "";
+        if (GetEnvironmentVariableA("MK_FULLSCREEN", v, sizeof(v)) && v[0] == '1') fullscreen_toggle();
+    }
+    int now = own_window_focused() && ((key(VK_MENU) && key(VK_RETURN)) || (key(VK_F4) && !key(VK_MENU)));
+    if (now && !was) fullscreen_toggle();
     was = now;
 }
 
@@ -415,7 +423,6 @@ static int32_t (*g_touch_count)(void);
 static void (*g_get_touch)(int32_t, touch *);
 static void (*g_mouse_pos)(float *);
 static uint8_t (*g_mouse_button)(int32_t);
-static int32_t (*g_frame_count)(void);
 static touch g_mtouch;
 static int g_mtouch_active, g_mtouch_frame = -1;
 static int g_mouse_presses;  // mouse "touches" begun (mk_follow_last_device)

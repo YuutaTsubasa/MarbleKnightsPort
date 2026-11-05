@@ -1,0 +1,3 @@
+// MarbleKnightsLauncher.exe: visual styles (common controls 6) and per-monitor DPI. No game art here:
+// the release carries none (the game's icon goes into MarbleKnights.exe when the data is prepared).
+1 24 "mk_launcher.manifest"

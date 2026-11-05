@@ -30,7 +30,12 @@ CLANG = r"C:\Program Files\LLVM\bin\clang.exe"
 PVRTC_RGB4, PVRTC_RGBA4, RGBA32 = 32, 33, 4
 
 
-def decoder():
+def decoder(dll=None):
+    """dll: a prebuilt decoder (the launcher's); otherwise built from tools/pvrtc_decode.c"""
+    if dll:
+        lib = ctypes.CDLL(dll)
+        lib.pvrtc4_decode.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_char_p]
+        return lib
     if not os.path.exists(DLL) or os.path.getmtime(DLL) < os.path.getmtime(SRC):
         os.makedirs(os.path.dirname(DLL), exist_ok=True)
         subprocess.run([CLANG, "--target=x86_64-pc-windows-msvc", "-O2", "-shared", "-o", DLL, SRC], check=True)

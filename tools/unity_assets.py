@@ -106,9 +106,14 @@ _LIBUNITY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
                          "AndroidPlayer", "Variations", "il2cpp", "Release", "Libs", "arm64-v8a", "libunity.so")
 
 
+# a release folder has the Windows player instead (tools/ sits next to it): the same table
+_UNITYPLAYER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "UnityPlayer.dll")
+
+
 def _common_strings():
-    """Unity's built-in type-tree string table (offsets with the high bit set), read from libunity.so."""
-    d = open(_LIBUNITY, "rb").read()
+    """Unity's built-in type-tree string table (offsets with the high bit set), read from libunity.so
+    or, in a release folder, from UnityPlayer.dll (identical in 2019.4.17f1)."""
+    d = open(_LIBUNITY if os.path.exists(_LIBUNITY) else _UNITYPLAYER, "rb").read()
     i = d.index(b"AABB\0AnimationClip\0")
     end = d.index(b"\0\0", i)
     out, off = {}, 0

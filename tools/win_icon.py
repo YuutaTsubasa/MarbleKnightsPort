@@ -113,9 +113,9 @@ def png_bytes(size, rows):
             + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
-def main():
-    icons = sorted(glob.glob(os.path.join(APP, "AppIcon*.png")), key=lambda p: read_png(p)[0])
-    assert icons, "no AppIcon*.png in " + APP
+def main(app=APP, out=OUT):
+    icons = sorted(glob.glob(os.path.join(app, "AppIcon*.png")), key=lambda p: read_png(p)[0])
+    assert icons, "no AppIcon*.png in " + app
     w, h, rows = read_png(icons[-1])
     images = [png_bytes(s, resize(w, h, rows, s)) for s in SIZES]
     head = struct.pack("<HHH", 0, 1, len(images))
@@ -124,10 +124,10 @@ def main():
     for s, img in zip(SIZES, images):
         entries += struct.pack("<BBBBHHII", s % 256, s % 256, 0, 0, 1, 32, len(img), off)
         off += len(img)
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    with open(OUT, "wb") as f:
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "wb") as f:
         f.write(head + entries + b"".join(images))
-    print(f"{os.path.basename(icons[-1])} ({w}x{h}) -> {OUT}")
+    print(f"{os.path.basename(icons[-1])} ({w}x{h}) -> {out}")
 
 
 if __name__ == "__main__":

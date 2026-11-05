@@ -21,21 +21,21 @@ UF = os.path.join(ROOT, "work", "ipa", "Payload", "reprovisioned.app", "Framewor
 OUT = os.path.join(ROOT, "work", "win", "image")
 
 
-def main():
-    m = MachO(UF)
+def main(uf=UF, out=OUT):
+    m = MachO(uf)
     segs = [s for s in m.segments if s["name"] != "__LINKEDIT" and s["vmsize"]]
     end = max(s["vmaddr"] + s["vmsize"] for s in segs)
     img = bytearray(end)
     for s in segs:
         img[s["vmaddr"]:s["vmaddr"] + s["filesize"]] = m.data[s["fileoff"]:s["fileoff"] + s["filesize"]]
-    os.makedirs(OUT, exist_ok=True)
+    os.makedirs(out, exist_ok=True)
     rb = sorted(set(m.rebases()))
-    with open(os.path.join(OUT, "rebases.bin"), "wb") as f:
+    with open(os.path.join(out, "rebases.bin"), "wb") as f:
         f.write(struct.pack(f"<{len(rb)}I", *rb))
     binds = m.binds("bind") + m.binds("lazy") + m.binds("weak")
     libs = ["self"] + m.dylibs
     seen = set()
-    with open(os.path.join(OUT, "binds.txt"), "w", encoding="utf-8", newline="\n") as f:
+    with open(os.path.join(out, "binds.txt"), "w", encoding="utf-8", newline="\n") as f:
         for addr, ordinal, sym, addend, weak in binds:
             if addr in seen:
                 continue
@@ -44,13 +44,13 @@ def main():
             f.write(f"{addr:x} {sym} {lib} {addend} {int(bool(weak))}\n")
     init = m.section("__DATA_CONST", "__mod_init_func") or m.section("__DATA", "__mod_init_func")
     inits = [struct.unpack_from("<Q", img, init.addr + 8 * k)[0] for k in range(init.size // 8)]
-    with open(os.path.join(OUT, "inits.txt"), "w", newline="\n") as f:
+    with open(os.path.join(out, "inits.txt"), "w", newline="\n") as f:
         f.write("".join(f"{a:x}\n" for a in inits))
-    with open(os.path.join(OUT, "exports.txt"), "w", newline="\n") as f:
+    with open(os.path.join(out, "exports.txt"), "w", newline="\n") as f:
         f.write("".join(f"{a:x} {n}\n" for n, a in sorted(m.exports().items(), key=lambda kv: kv[1])))
-    with open(os.path.join(OUT, "image.bin"), "wb") as f:
+    with open(os.path.join(out, "image.bin"), "wb") as f:
         f.write(img)
-    print(f"image {end / 2**20:.1f} MB, {len(rb)} rebases, {len(seen)} bound slots, {len(inits)} initializers -> {OUT}")
+    print(f"image {end / 2**20:.1f} MB, {len(rb)} rebases, {len(seen)} bound slots, {len(inits)} initializers -> {out}")
 
 
 if __name__ == "__main__":
