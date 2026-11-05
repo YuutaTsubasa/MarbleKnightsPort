@@ -169,3 +169,15 @@ Rewired 會印「ControllerDataFiles is missing critical data!」，要和 Andro
   - 主執行緒用啟動器的 `/STACK:268435456` 預留 256 MB，我們開的 pthread 預留 64 MB（都是用到才提交）。
   - host 堆疊太小的執行緒（Unity 自己開的）沿用舊做法，log 會寫「guest stack kept apart」。
 - **結果（GC 開著）**：標題點擊 → `LoadSceneViaButton` → `LoadScene`，選到觸控控制器（`CustomTiltController 0`，`IsTiltControllerUsed` 成立），進到主選單與 `World0_Level1`，沒有閃退；Unity log 的 `IndexOutOfRangeException`／`NullReferenceException` 從 11 個變 0 個；沒有執行緒走舊做法。
+
+## Windows：1P 跟著裝置、全螢幕游標、控制器頁的「完成」（11-05）
+
+- **1P 跟著最後用的裝置**：`UI_ControllerWidget.Update`（0x19aa3e0）進入時先跑 `mk_follow_last_device`（`a64toc.py` 的 `ENTRY_HOOKS`）。單人時，手把按鍵 → 把 1P 指派給那個控制器；滑鼠按下 → `ForceTiltController` 回到觸控。鍵盤（ControllerType 0）不算，不然 Alt+Enter 會把 1P 搶走。選單裡（`CustomTiltControl.GetIsInMenu`）不切換。
+- **全螢幕游標消失**：只呼叫 `Cursor.visible` 沒用；每 10 次 pump 在我們的視窗有焦點時，Windows 層級 `ShowCursor`／`SetCursor(IDC_ARROW)`／`ClipCursor(NULL)` 補回來才看得到。
+- **「完成」按不出去**：
+  - 每次按下都有走到 `ControllerSelection.Continue`（0x1d25d28），但它要 `CanvasGroup.alpha == 1.0` 才繼續。
+  - alpha 確實被設成 1，`Continue` 讀到的卻不是 1；log 裡 `CanvasGroup::get_alpha` 的 host callback 從沒出現。
+  - **原因**：Windows 播放器的連結器把機器碼相同的函式合併（約 900 個 icall 共用位址，例如 `get_alpha` 和 `Cloth::get_bendingStiffness`）。`mk_host_callback` 用函式位址去重，`get_alpha` 就用了第一個登記者的項目與簽章，float 回傳值沒放進 s0。
+  - **修法**（`win_rt.c`）：icall 依名稱各自一個項目，簽章來自自己的受控方法。修完按一次就離開（使用者確認）。
+  - 滑鼠點很多下後離開的那次走的是別條路，不是 `Continue`。
+  - 其他同樣共用位址、回傳 float 的 icall 也一起修好了；之後看到「數值怪怪的」可以先想到這個。

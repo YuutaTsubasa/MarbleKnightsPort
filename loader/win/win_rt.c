@@ -114,17 +114,15 @@ void *mk_find_icall(const char *name) {
 }
 uint64_t mk_host_callback(void *fn, const char *what) {
     if (!fn) return 0;
-    // The player's linker folds identical functions, so different icalls can share one address
-    // (CanvasGroup::get_alpha with an integer getter, say). Each icall keeps its own entry: the
-    // signature, float or integer return, comes from its own managed method.
+    // The player's linker folds identical functions, so different icalls share one address (about
+    // 900 of them; CanvasGroup::get_alpha with Cloth::get_bendingStiffness, for one). Each icall
+    // keeps its own entry, so its signature comes from its own managed method: sharing the first
+    // icall's entry lost get_alpha's float result.
     int icall = what && strstr(what, "::");
     for (LONG i = 0; i < g_ncbs; i++) {
         if (g_cbs[i].fn != fn) continue;
         const char *w = g_cbs[i].what;
-        if (icall && w && strstr(w, "::") && strcmp(w, what)) {
-            mk_log("icall %s shares its code with %s", what, w);
-            continue;
-        }
+        if (icall && w && strstr(w, "::") && strcmp(w, what)) continue;
         return (uint64_t)(uintptr_t)(g_markers + MARK_CB + 16u * (uint32_t)i);
     }
     LONG i = InterlockedIncrement(&g_ncbs) - 1;
