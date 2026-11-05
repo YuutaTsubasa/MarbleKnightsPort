@@ -4,7 +4,7 @@
 
 把 WayForward 的 Apple Arcade 遊戲 *Marble Knights*（已下架）從 iOS 移植到 Windows 的非官方專案，做法是靜態重編譯：iOS 版 `UnityFramework` 裡的 ARM64 程式（IL2CPP 執行環境＋遊戲編譯好的 C#，超過 10 萬個函式）事先轉成 C，編成 `GameAssembly.dll`，交給官方 Unity 2019.4.17f1 Windows 播放器載入。iOS 的系統呼叫、Game Center、CloudKit 存檔、手把與震動由一層小的相容層代替。
 
-**本專案不含任何遊戲資料。** 遊戲要自己準備（iOS 版 *Marble Knights* 2.3.1，build 760642）。Unity 的播放器也不包含，請從 Unity 官方下載。建置或分享任何東西之前，請先讀 [LEGAL.md](LEGAL.md)。
+**本專案不含任何遊戲資料。** 遊戲要自己準備（iOS 版 *Marble Knights* 2.3.1，build 760642），啟動器在你的電腦上把它轉成能玩的資料夾或 Android APK。建置或分享任何東西之前，請先讀 [LEGAL.md](LEGAL.md)。
 
 > [!IMPORTANT]
 > 還在開發中，沒有發布版本。Windows 上已經能開機、進關卡玩，但還有幾個地方是壞的（見[現況](#現況)）。
@@ -14,20 +14,27 @@
 Windows 上能用的：
 
 - 開頭標誌、標題、存檔、主選單、Quest Mode 關卡；有聲音（遊戲自己的 FMOD 混音，經 waveOut 播放）。
-- 手把（XInput）與鍵盤。
-- 畫面：iOS 的 Metal 著色器轉成 GLSL，播放器用 OpenGL ES 3 跑；桌機 GPU 不支援的 PVRTC 貼圖在建置時解開。
+- 手把（XInput）、鍵盤，滑鼠當觸控（標題畫面、關卡裡的畫面搖桿）；單人時 1P 跟著最後用的裝置。
+- 畫面：iOS 的 Metal 著色器轉成 GLSL，播放器用 OpenGL ES 3 跑；桌機 GPU 不支援的 PVRTC 貼圖在準備時解開。
+- 全螢幕（Alt+Enter 或 F4）是無邊框視窗，錄影軟體擷取得到。
 
 已知問題：
 
-- 滑鼠還不能當觸控用（標題畫面、關卡裡的畫面搖桿）。
-- 標題 → 選單之間偶爾在 GC 時閃退。
-- 只有全螢幕才出現的破圖；地板光暈的 z-fighting。
+- 地板漩渦附近偶爾冒出淺藍色亮點（著色器動畫，還沒查）。
 
 | 平台 | 狀態 |
 |---|---|
-| Windows（x64） | 能建置、能玩，有上面的問題 |
-| Android（ARM64） | 早期的路線：用 Mach-O 載入器直接載入 iOS 的 `UnityFramework`，配 Unity 官方 Android 播放器；跑到第一個場景 |
+| Windows（x64） | 能玩 |
+| Android（ARM64） | 能玩（作者的裝置上約 60 fps）：用 Mach-O 載入器直接載入 iOS 的 `UnityFramework`，配 Unity 官方 Android 播放器 |
 | Linux、macOS | 還沒開始 |
+
+## 遊玩（啟動器）
+
+Release 的資料夾（`tools/package_win.py` 做的）裡沒有遊戲資料，打開 `MarbleKnightsLauncher.exe`：
+
+1. 選你自己的 IPA，按「準備」（約 1–2 分鐘，要 3.5 GB 空間）。啟動器用附帶的 Python 跑 `tools/prepare_win.py`，中斷了再按一次會接著做。
+2. 按「開始遊戲」。選項有「以全螢幕開始」與測試用的「關閉記憶體回收」。
+3. Android：按「製作 APK」，`tools/prepare_android.py` 在 `android\` 做出 `MarbleKnights.apk` 和 3.4 GB 的 `MarbleKnights` 資料夾。把資料夾整個複製到手機內部儲存空間的最上層，再安裝 APK；第一次開啟時允許存取檔案。APK 用啟動器第一次做 APK 時產生的金鑰（`android\signing-key.json`）簽，之後的 APK 要靠同一把金鑰才能直接覆蓋安裝。
 
 ## 做法
 
@@ -63,6 +70,14 @@ NDK="$LOCALAPPDATA/Android/Sdk/ndk/29.0.13599879"
 cmake -S loader -B work/build-android -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build work/build-android
 python -I tools/build_apk.py      # 需要 work/unity/AndroidPlayer 與 work/raw-android；APK 在 out/，只裝自己的裝置
+```
+
+### Release 資料夾
+
+```bash
+# Android 代理另外建一份不含驗證用 batch.c（從遊戲產生）的
+cmake -S loader -B work/build-android-release -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=Release -DMK_RECOMP_BATCH=OFF
+python -I tools/package_win.py    # out/MarbleKnightsRecompiled-win64；會檢查裡面沒有遊戲資料
 ```
 
 `tools/thor-*.sh` 是作者在自己的測試裝置上用的腳本。

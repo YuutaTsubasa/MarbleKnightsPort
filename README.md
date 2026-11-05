@@ -12,8 +12,8 @@ for the iOS system calls, Game Center, CloudKit saves, game controllers and
 haptics.
 
 **No game data is included.** You supply your own copy of the iOS app
-(*Marble Knights* 2.3.1, build 760642). Unity's players are not included
-either: they come from Unity's own downloads. Read [LEGAL.md](LEGAL.md) before
+(*Marble Knights* 2.3.1, build 760642); the launcher turns it into a playable
+folder or an Android APK on your own computer. Read [LEGAL.md](LEGAL.md) before
 building or sharing anything.
 
 > [!IMPORTANT]
@@ -24,6 +24,7 @@ building or sharing anything.
 ## Table of Contents
 
 - [Status](#status)
+- [Playing (the launcher)](#playing-the-launcher)
 - [How it works](#how-it-works)
 - [How to Build](#how-to-build)
 - [Repository Layout](#repository-layout)
@@ -35,25 +36,43 @@ What works on Windows:
 
 - Opening videos, title screen, saves, main menu and Quest Mode levels, with
   sound (the game's own FMOD mixer, played through waveOut).
-- Controllers (XInput) and keyboard.
+- Controllers (XInput), keyboard, and the mouse as touch (title screen, the
+  on-screen joystick in levels); in single player, player 1 follows the device
+  used last.
 - The game's art: the iOS Metal shaders are translated to GLSL and the player
   runs on OpenGL ES 3; PVRTC textures, which desktop GPUs cannot sample, are
-  decoded at build time.
+  decoded when the game data is prepared.
+- Full screen (Alt+Enter or F4) is a borderless window that capture software
+  can record.
 
 Known problems:
 
-- The mouse does not yet work as touch input (title screen, the on-screen
-  joystick in levels).
-- An intermittent crash during garbage collection between the title screen
-  and the menu.
-- A broken frame that only appears in full screen; z-fighting on the plates'
-  glow.
+- Light blue specks now and then near the swirls on the floor plates (a shader
+  animation; not looked into yet).
 
 | Platform | State |
 |---|---|
-| Windows (x64) | builds and plays, with the problems above |
-| Android (ARM64) | an earlier route: the iOS `UnityFramework` loaded directly (Mach-O loader) under Unity's Android player; reaches the first scene |
+| Windows (x64) | plays |
+| Android (ARM64) | plays (about 60 fps on the author's device): the iOS `UnityFramework` loaded directly (Mach-O loader) under Unity's Android player |
 | Linux, macOS | not started |
+
+## Playing (the launcher)
+
+A release folder (made by `tools/package_win.py`) has no game data. Open
+`MarbleKnightsLauncher.exe`:
+
+1. Choose your own IPA and press Prepare (a minute or two; needs 3.5 GB). The
+   launcher runs `tools/prepare_win.py` on the bundled Python; if it stops,
+   pressing Prepare again carries on.
+2. Press Play. The options are starting in full screen and, for bug reports,
+   turning off the garbage collector.
+3. Android: press Make APK. `tools/prepare_android.py` writes
+   `MarbleKnights.apk` and a 3.4 GB `MarbleKnights` folder into `android\`.
+   Copy the whole folder to the top of the phone's internal storage, then
+   install the APK and allow file access when the game first asks. The APK is
+   signed with a key the launcher makes the first time
+   (`android\signing-key.json`); later APKs need the same key to install over
+   it.
 
 ## How it works
 
@@ -99,6 +118,15 @@ bash tools/build_win_ga.sh                # GameAssembly.dll (about 5 minutes)
 Then run `work/win/MarbleKnights/MarbleKnights.exe`. Everything the build
 produces is derived from the game and stays in `work/`, which is ignored by
 Git.
+
+A release folder needs the Android proxy built once more without the
+validation harness (`batch.c`, which is generated from the game):
+
+```bash
+NDK="$LOCALAPPDATA/Android/Sdk/ndk/29.0.13599879"
+cmake -S loader -B work/build-android-release -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=Release -DMK_RECOMP_BATCH=OFF
+python -I tools/package_win.py    # out/MarbleKnightsRecompiled-win64; checks that no game data got in
+```
 
 ## Repository Layout
 

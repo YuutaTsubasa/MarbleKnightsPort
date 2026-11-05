@@ -250,3 +250,13 @@ Android 的影片解碼器用 `ScriptMapper::FindShader("Hidden/VideoDecodeAndro
 狀態：建置與初始化通過（兩份各自產生 id，資料埠、廣播埠都開好）。**還沒有兩邊真的連起來玩過**：同一台 Thor 上，第二個畫面（Screen-2）的那份卡在開場影片、畫面全黑，分割畫面也開不起來，所以要第二台 Android 裝置測。
 
 事故紀錄：測試時把 A 從第二個畫面關掉後，焦點落到桌面 App 的第二畫面，虛擬手把的 A 鍵讓它開了另一個遊戲。`tools/vpad.sh` 現在送輸入前會檢查焦點視窗是不是 Marble Knights，不是就拒絕。
+
+## 24. 啟動器做 Android APK（2026-11-06）
+
+Release 只附 `android/base.apk`（`tools/build_apk.py --base`，13 MB）：manifest 與資源、Unity 的 `classes.dex`、我們的 `classes2.dex`（`UnityPlayerActivity` 加 `-force-gles30`，以及 `loader/android/MkStartActivity.java`）、Unity 的 `libmain.so`／`libunity.so`、我們的 `libil2cpp.so`、Android 播放器自己的 `unity default resources`。代理要用另一個建置資料夾 `work/build-android-release`（`MK_RECOMP_BATCH=OFF`）：開發用的 `work/build-android` 連了從遊戲產生的驗證用 `batch.c`，不能放進 Release；`package_win.py` 會檢查 base.apk 的檔案清單與這個設定。
+
+啟動器的「製作 APK」跑 `tools/prepare_android.py`（約 40–60 秒）：檢查 UnityFramework 版本 → 解出 `Data/Raw` 到 `android/MarbleKnights/Raw`（保留 `ios` 的名字）→ `Data` 其他檔案加 GLES3 著色器程式＋`Hidden/VideoDecodeAndroid` → AssetBundle 加 GLES3 程式，`videos/` 的 bundle 改成不壓縮（同 `repack_videos.py`）→ base.apk 加上 `libmkframework.so` 與 `assets/bin/Data`（不壓縮、4 位元組對齊）並簽名。跟 Thor 上正在用的資料比對：StreamingAssets 813 個檔案、Data 18 個檔案逐位元組相同。
+
+- 玩家的電腦沒有 Java 和 Android SDK，所以對齊與簽名用純 Python（`tools/apk_sign.py`）：照 zipalign 的 0xD935 extra 欄位補齊；APK Signature Scheme v2（minSdk 24 只要 v2），RSA 2048＋SHA-256，自簽憑證自己寫 DER。金鑰第一次產生、存在 `android/signing-key.json`，之後的 APK 才能覆蓋安裝。`apksigner verify` 與 `zipalign -c` 都通過。
+- 3.4 GB 的 StreamingAssets 不放進 APK（太大），玩家把 `MarbleKnights` 資料夾複製到手機最上層，`proxy.c` 本來就從 `/sdcard/MarbleKnights/Raw` 讀。`MkStartActivity` 是新的啟動畫面：沒有檔案權限就要求（targetSdk 29＋`requestLegacyExternalStorage`），找不到資料就用中文或英文說明要怎麼複製，都有了才開 `UnityPlayerActivity`。
+- Release 的套件名稱跟開發用的一樣（`com.yuutatsubasa.marbleknights`），但簽名金鑰不同：已經裝了開發版的裝置要先解除安裝才能裝，存檔會跟著刪掉。

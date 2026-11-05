@@ -6,7 +6,7 @@ here="$(cd "$(dirname "$0")/.." && pwd -W)"
 dev=(adb -s cc6a97fe)
 pkg=com.yuutatsubasa.marbleknights
 secs="${1:-25}"
-top=$("${dev[@]}" shell dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity" || true)
+top=$("${dev[@]}" shell dumpsys activity activities | grep -m1 -E "ResumedActivity" || true)
 echo "top activity: ${top:-none}"
 home=$("${dev[@]}" shell cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME | tail -1 | cut -d/ -f1 | tr -d '
 ')

@@ -1,6 +1,8 @@
 // MarbleKnightsLauncher.exe: the release's front door. A release has no game data; here the player
 // picks their own IPA once and the launcher runs tools/prepare_win.py (on the bundled Python) to make
-// MarbleKnights_Data from it, then starts MarbleKnights.exe with the chosen options.
+// MarbleKnights_Data from it, then starts MarbleKnights.exe with the chosen options. It can also make
+// the Android version from the same IPA (tools/prepare_android.py: android/MarbleKnights.apk and the
+// android/MarbleKnights data folder, from the android/base.apk the release ships).
 //
 // Folder layout (next to this exe): MarbleKnights.exe, UnityPlayer.dll, GameAssembly.dll,
 // python/python.exe (embedded Python), tools/*.py, bin/mk_native.dll (PVRTC decoder and LZ4).
@@ -19,7 +21,8 @@
 #include <wchar.h>
 
 enum { ID_IPA = 100, ID_BROWSE, ID_PREPARE, ID_PROGRESS, ID_STAGE, ID_LOG, ID_STATUS, ID_FULLSCREEN, ID_NOGC,
-       ID_FOLDER, ID_PLAY, ID_TITLE, ID_GROUP_DATA, ID_GROUP_OPT, ID_IPA_LABEL };
+       ID_FOLDER, ID_PLAY, ID_TITLE, ID_GROUP_DATA, ID_GROUP_OPT, ID_IPA_LABEL, ID_GROUP_ANDROID, ID_ANDROID_STATUS,
+       ID_ANDROID, ID_ANDROID_FOLDER };
 #define WM_PREP_LINE (WM_APP + 1)
 #define WM_PREP_EXIT (WM_APP + 2)
 
@@ -28,6 +31,7 @@ static HWND g_wnd;
 static HFONT g_font, g_title_font;
 static HANDLE g_proc;
 static int g_zh, g_busy, g_dpi = 96, g_stage, g_stages = 1;
+static int g_job;  // what is running: 0 the Windows game data, 1 the Android version
 
 // UI text: Traditional Chinese when Windows is in Chinese, English otherwise
 static const wchar_t *T(const wchar_t *en, const wchar_t *zh) { return g_zh ? zh : en; }
@@ -52,6 +56,18 @@ static int data_ready(void) {
     return strstr(buf, "\"icon\"") != NULL && exists(L"MarbleKnights_Data\\mk\\image.bin");
 }
 
+// the Android version is ready when prepare_android.py made and signed the APK
+static int android_ready(void) {
+    wchar_t p[MAX_PATH];
+    path_in(p, L"android\\work\\prepare.json");
+    FILE *f = _wfopen(p, L"rb");
+    if (!f) return 0;
+    char buf[4096] = { 0 };
+    fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    return strstr(buf, "\"apk\"") != NULL && exists(L"android\\MarbleKnights.apk");
+}
+
 static void log_line(const wchar_t *s) {
     HWND e = GetDlgItem(g_wnd, ID_LOG);
     int n = GetWindowTextLengthW(e);
@@ -63,7 +79,7 @@ static void log_line(const wchar_t *s) {
 
 static void update_state(void) {
     int ready = data_ready();
-    SetDlgItemTextW(g_wnd, ID_STATUS, g_busy ? T(L"Preparing the game data...", L"正在準備遊戲資料…")
+    SetDlgItemTextW(g_wnd, ID_STATUS, g_busy && g_job == 0 ? T(L"Preparing the game data...", L"正在準備遊戲資料…")
                     : ready ? T(L"Game data: ready", L"遊戲資料：已準備好")
                     : T(L"Game data: not prepared yet. Choose your Marble Knights IPA (version 2.3.1) and press Prepare.",
                         L"遊戲資料：還沒準備。選擇你的 Marble Knights IPA（2.3.1 版），再按「準備」。"));
@@ -72,6 +88,17 @@ static void update_state(void) {
     EnableWindow(GetDlgItem(g_wnd, ID_BROWSE), !g_busy);
     EnableWindow(GetDlgItem(g_wnd, ID_IPA), !g_busy);
     SetDlgItemTextW(g_wnd, ID_PREPARE, ready ? T(L"Prepare again", L"重新準備") : T(L"Prepare", L"準備"));
+    int aready = android_ready(), base = exists(L"android\\base.apk");
+    SetDlgItemTextW(g_wnd, ID_ANDROID_STATUS,
+                    !base ? T(L"This folder has no android\\base.apk.", L"這個資料夾沒有 android\\base.apk。")
+                    : g_busy && g_job == 1 ? T(L"Making the Android version...", L"正在製作 Android 版…")
+                    : aready ? T(L"Ready: copy the MarbleKnights folder to the top of the phone's storage, then install MarbleKnights.apk.",
+                                 L"做好了：把 MarbleKnights 資料夾複製到手機儲存空間最上層，再安裝 MarbleKnights.apk。")
+                    : T(L"Makes MarbleKnights.apk and a 3.4 GB data folder for an Android phone (arm64) from the same IPA.",
+                        L"用同一份 IPA 做出 Android 手機（arm64）用的 MarbleKnights.apk 和 3.4 GB 的資料夾。"));
+    EnableWindow(GetDlgItem(g_wnd, ID_ANDROID), base && !g_busy && GetWindowTextLengthW(GetDlgItem(g_wnd, ID_IPA)) > 0);
+    SetDlgItemTextW(g_wnd, ID_ANDROID, aready ? T(L"Make again", L"重新製作") : T(L"Make APK", L"製作 APK"));
+    EnableWindow(GetDlgItem(g_wnd, ID_ANDROID_FOLDER), exists(L"android"));
 }
 
 static void save_settings(void) {
@@ -82,7 +109,7 @@ static void save_settings(void) {
     WritePrivateProfileStringW(L"test", L"nogc", IsDlgButtonChecked(g_wnd, ID_NOGC) ? L"1" : L"0", g_ini);
 }
 
-// ---- running prepare_win.py ---------------------------------------------------------------------
+// ---- running prepare_win.py / prepare_android.py ---------------------------------------------------------------------
 typedef struct { HANDLE out; } reader_args;
 
 static DWORD WINAPI reader(LPVOID arg) {
@@ -118,7 +145,7 @@ static DWORD WINAPI waiter(LPVOID arg) {
     return 0;
 }
 
-static void start_prepare(void) {
+static void start_prepare(int job) {
     wchar_t ipa[MAX_PATH], py[MAX_PATH], script[MAX_PATH], lz4[MAX_PATH], pvrtc[MAX_PATH];
     GetDlgItemTextW(g_wnd, ID_IPA, ipa, MAX_PATH);
     if (GetFileAttributesW(ipa) == INVALID_FILE_ATTRIBUTES) {
@@ -127,13 +154,13 @@ static void start_prepare(void) {
     }
     path_in(py, L"python\\python.exe");
     if (GetFileAttributesW(py) == INVALID_FILE_ATTRIBUTES) wcscpy(py, L"python.exe");  // a development folder
-    path_in(script, L"tools\\prepare_win.py");
+    path_in(script, job ? L"tools\\prepare_android.py" : L"tools\\prepare_win.py");
     path_in(lz4, L"bin\\mk_native.dll");
     path_in(pvrtc, L"bin\\mk_native.dll");
     static wchar_t cmd[4 * MAX_PATH + 256];
     swprintf(cmd, sizeof(cmd) / sizeof(cmd[0]), L"\"%ls\" -I -u \"%ls\" \"%ls\" \"%ls\"", py, script, ipa, g_dir);
     if (GetFileAttributesW(lz4) != INVALID_FILE_ATTRIBUTES) swprintf(cmd + wcslen(cmd), 2 * MAX_PATH, L" --lz4 \"%ls\"", lz4);
-    if (GetFileAttributesW(pvrtc) != INVALID_FILE_ATTRIBUTES) swprintf(cmd + wcslen(cmd), 2 * MAX_PATH, L" --pvrtc \"%ls\"", pvrtc);
+    if (!job && GetFileAttributesW(pvrtc) != INVALID_FILE_ATTRIBUTES) swprintf(cmd + wcslen(cmd), 2 * MAX_PATH, L" --pvrtc \"%ls\"", pvrtc);
 
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     HANDLE rd, wr;
@@ -156,6 +183,7 @@ static void start_prepare(void) {
     CloseHandle(pi.hThread);
     g_proc = pi.hProcess;
     g_busy = 1;
+    g_job = job;
     g_stage = 0;
     SetWindowTextW(GetDlgItem(g_wnd, ID_LOG), L"");
     SendDlgItemMessageW(g_wnd, ID_PROGRESS, PBM_SETPOS, 0, 0);
@@ -173,6 +201,7 @@ static const wchar_t *stage_name(const wchar_t *s) {
         { L"extract", L"Extracting the game data", L"解出遊戲資料" },
         { L"player data", L"Converting the player data", L"轉換主資料" },
         { L"asset bundles", L"Converting shaders and textures (the longest step)", L"轉換著色器與貼圖（最久的一步）" },
+        { L"apk", L"Making and signing the APK", L"製作並簽署 APK" },
         { L"image", L"Preparing the game code's data", L"準備遊戲程式的資料" },
         { L"icon", L"Setting the icon", L"設定圖示" },
     };
@@ -287,8 +316,12 @@ static void build_controls(void) {
         BS_AUTOCHECKBOX | WS_TABSTOP, 24, 350, 512, 22, ID_NOGC);
     CheckDlgButton(g_wnd, ID_FULLSCREEN, GetPrivateProfileIntW(L"launcher", L"fullscreen", 0, g_ini) ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(g_wnd, ID_NOGC, GetPrivateProfileIntW(L"test", L"nogc", 0, g_ini) ? BST_CHECKED : BST_UNCHECKED);
-    add(L"BUTTON", T(L"Open folder", L"開啟資料夾"), BS_PUSHBUTTON | WS_TABSTOP, 12, 394, 130, 32, ID_FOLDER);
-    add(L"BUTTON", T(L"Play", L"開始遊戲"), BS_DEFPUSHBUTTON | WS_TABSTOP, 418, 394, 130, 32, ID_PLAY);
+    add(L"BUTTON", L"Android", BS_GROUPBOX, 12, 390, 536, 90, ID_GROUP_ANDROID);
+    add(L"STATIC", L"", 0, 24, 410, 512, 34, ID_ANDROID_STATUS);
+    add(L"BUTTON", L"", BS_PUSHBUTTON | WS_TABSTOP, 24, 444, 120, 28, ID_ANDROID);
+    add(L"BUTTON", T(L"Open the android folder", L"開啟 android 資料夾"), BS_PUSHBUTTON | WS_TABSTOP, 152, 444, 170, 28, ID_ANDROID_FOLDER);
+    add(L"BUTTON", T(L"Open folder", L"開啟資料夾"), BS_PUSHBUTTON | WS_TABSTOP, 12, 492, 130, 32, ID_FOLDER);
+    add(L"BUTTON", T(L"Play", L"開始遊戲"), BS_DEFPUSHBUTTON | WS_TABSTOP, 418, 492, 130, 32, ID_PLAY);
     update_state();
 }
 
@@ -302,7 +335,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case ID_BROWSE: browse(); break;
-        case ID_PREPARE: start_prepare(); break;
+        case ID_PREPARE: start_prepare(0); break;
+        case ID_ANDROID: start_prepare(1); break;
+        case ID_ANDROID_FOLDER: {
+            wchar_t p[MAX_PATH];
+            path_in(p, L"android");
+            ShellExecuteW(w, L"open", p, NULL, NULL, SW_SHOWNORMAL);
+            break;
+        }
         case ID_PLAY: play(); break;
         case ID_FOLDER: ShellExecuteW(w, L"open", g_dir, NULL, NULL, SW_SHOWNORMAL); break;
         case ID_IPA: if (HIWORD(wp) == EN_CHANGE) update_state(); break;
@@ -315,7 +355,21 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         CloseHandle(g_proc);
         g_proc = NULL;
         g_busy = 0;
-        if (wp == 0 && data_ready()) log_line(T(L"The game data is ready.", L"遊戲資料準備好了。"));
+        if (g_job == 1) {
+            if (wp == 0 && android_ready()) {
+                log_line(T(L"The Android version is ready, in the android folder:", L"Android 版做好了，在 android 資料夾裡："));
+                log_line(T(L"1. Copy the whole MarbleKnights folder to the top of the phone's internal storage (next to Download).",
+                           L"1. 把整個 MarbleKnights 資料夾複製到手機內部儲存空間的最上層（跟 Download 同一層）。"));
+                log_line(T(L"2. Copy MarbleKnights.apk to the phone and install it (allow installing unknown apps).",
+                           L"2. 把 MarbleKnights.apk 複製到手機安裝（要允許安裝未知應用程式）。"));
+                log_line(T(L"3. The first time, allow access to files when the game asks.", L"3. 第一次開啟時，遊戲會要求存取檔案，請允許。"));
+                log_line(T(L"Keep android\\signing-key.json: later APKs need it to install over this one.",
+                           L"請保留 android\\signing-key.json：之後做的 APK 要靠它才能直接覆蓋安裝。"));
+            } else if (wp) {
+                log_line(T(L"Making the Android version stopped. Press Make APK to continue where it stopped.",
+                           L"製作中斷了；再按「製作 APK」會從中斷的地方繼續。"));
+            }
+        } else if (wp == 0 && data_ready()) log_line(T(L"The game data is ready.", L"遊戲資料準備好了。"));
         else if (wp) log_line(T(L"Preparing stopped. Press Prepare to continue where it stopped.", L"準備中斷了；再按「準備」會從中斷的地方繼續。"));
         update_state();
         return 0;
@@ -323,7 +377,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         SetBkMode((HDC)wp, TRANSPARENT);
         return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
     case WM_CLOSE:
-        if (g_busy && MessageBoxW(w, T(L"Stop preparing? It can continue later.", L"要停止準備嗎？之後可以接著做。"), L"Marble Knights",
+        if (g_busy && MessageBoxW(w, T(L"Stop now? It can continue later.", L"要停止嗎？之後可以接著做。"), L"Marble Knights",
                                   MB_YESNO | MB_ICONQUESTION) != IDYES)
             return 0;
         if (g_proc) TerminateProcess(g_proc, 1);
@@ -359,7 +413,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
     wc.lpszClassName = L"MarbleKnightsLauncher";
     RegisterClassW(&wc);
-    RECT r = { 0, 0, S(560), S(438) };
+    RECT r = { 0, 0, S(560), S(536) };
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRect(&r, style, FALSE);
     HWND w = CreateWindowW(wc.lpszClassName, T(L"Marble Knights Launcher", L"Marble Knights 啟動器"), style, CW_USEDEFAULT, CW_USEDEFAULT,

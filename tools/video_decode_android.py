@@ -110,11 +110,13 @@ def patch_script_mapper(data):
     raise SystemExit("ScriptMapper entry not found")
 
 
-def main(tree=None):
+def main(tree=None, out=OUT, original=DATA):
+    """out: the patched Data folder (unity_builtin_extra already has GLES3 programs); original: where the
+    original globalgamemanagers is (the launcher passes the same folder for both)."""
     if tree is None:
         import patch_shaders
         tree = patch_shaders.shader_tree()
-    path = os.path.join(OUT, "Resources", "unity_builtin_extra")
+    path = os.path.join(out, "Resources", "unity_builtin_extra")
     sf = ua.SerializedFile(open(path, "rb").read())
     src = [x for x in sf.objects_of(48) if x[0] == SRC_ID]
     if not src or 9 not in sf.read(src[0][1], src[0][2], src[0][3] or tree)["platforms"]:
@@ -130,8 +132,8 @@ def main(tree=None):
     o = [check.read(s, z, tt or tree) for p, s, z, tt in check.objects_of(48) if p == NEW_ID][0]
     assert o["m_ParsedForm"]["m_Name"] == "Hidden/VideoDecodeAndroid"
     open(path, "wb").write(data)
-    ggm = patch_script_mapper(open(os.path.join(DATA, "globalgamemanagers"), "rb").read())
-    open(os.path.join(OUT, "globalgamemanagers"), "wb").write(ggm)
+    ggm = patch_script_mapper(open(os.path.join(original, "globalgamemanagers"), "rb").read())
+    open(os.path.join(out, "globalgamemanagers"), "wb").write(ggm)
     print("added Hidden/VideoDecodeAndroid to unity_builtin_extra and ScriptMapper")
 
 

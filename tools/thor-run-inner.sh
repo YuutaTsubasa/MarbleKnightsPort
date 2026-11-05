@@ -10,7 +10,7 @@ for a in "$@"; do
   if [ "$a" = --sync ]; then sync=1; else envs+=("$a"); fi
 done
 # Never disturb a game the user is playing.
-top=$("${dev[@]}" shell dumpsys activity activities | grep -m1 -E "topResumedActivity|mResumedActivity" || true)
+top=$("${dev[@]}" shell dumpsys activity activities | grep -m1 -E "ResumedActivity" || true)
 echo "top activity: ${top:-none}"
 "${dev[@]}" shell mkdir -p /data/local/tmp/mk/Data/Managed/Metadata
 if [ $sync = 1 ]; then
